@@ -27,15 +27,31 @@ fn main() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     print!("Saida do comando: {}", stdout);
 
-    let ls_output = Command::new("ls")
+    let ffprobe_output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_format",
+            "-show_streams",
+            "-of",
+            "json",
+            &input,
+        ])
         .output()
-        .expect("Falha ao executar ls");
+        .expect("Falha ao executar ffprobe");
 
-    if !ls_output.status.success() {
-        eprintln!("Comando ls terminou com erro: {}", ls_output.status);
+    if !ffprobe_output.status.success() {
+        let ffprobe_stderr = String::from_utf8_lossy(&ffprobe_output.stderr);
+        eprintln!("Comando ffprobe terminou com erro: {}", ffprobe_output.status);
+        eprintln!("stderr do ffprobe:\n{}", ffprobe_stderr);
         return;
     }
 
-    let ls_stdout = String::from_utf8_lossy(&ls_output.stdout);
-    println!("Saida do ls:\n{}", ls_stdout);
+    let ffprobe_stdout = String::from_utf8_lossy(&ffprobe_output.stdout);
+    println!("Saida do ffprobe:\n{}", ffprobe_stdout);
+
+    let ffprobe_stderr = String::from_utf8_lossy(&ffprobe_output.stderr);
+    if !ffprobe_stderr.trim().is_empty() {
+        eprintln!("stderr do ffprobe:\n{}", ffprobe_stderr);
+    }
 }

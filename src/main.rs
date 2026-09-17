@@ -1,6 +1,8 @@
 use std::env;
 use std::process::Command;
 
+use serde_json::Value;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -49,6 +51,29 @@ fn main() {
 
     let ffprobe_stdout = String::from_utf8_lossy(&ffprobe_output.stdout);
     println!("Saida do ffprobe:\n{}", ffprobe_stdout);
+
+    let ffprobe_json: Value = serde_json::from_str(&ffprobe_stdout)
+        .expect("Falha ao converter a saida do ffprobe em JSON");
+
+    let subtitle_streams: Vec<Value> = ffprobe_json
+        .get("streams")
+        .and_then(Value::as_array)
+        .map(|streams| {
+            streams
+                .iter()
+                .filter(|stream| {
+                    stream
+                        .get("codec_type")
+                        .and_then(Value::as_str)
+                        == Some("subtitle")
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+
+    println!("Legendas encontradas: {}", subtitle_streams.len());
+    println!("subtitle_streams: {:#?}", subtitle_streams);
 
     let ffprobe_stderr = String::from_utf8_lossy(&ffprobe_output.stderr);
     if !ffprobe_stderr.trim().is_empty() {

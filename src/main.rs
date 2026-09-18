@@ -12,9 +12,6 @@ fn main() {
     }
 
     let input = args[1].clone();
-    let reversed = input.chars().rev().collect::<String>();
-    println!("You typed: {}", input);
-    println!("Reversed: {}", reversed);
 
     let output = Command::new("echo")
         .arg("Comando echo executado pelo Rust")
@@ -25,9 +22,6 @@ fn main() {
         eprintln!("Comando terminou com erro: {}", output.status);
         return;
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    print!("Saida do comando: {}", stdout);
 
     let ffprobe_output = Command::new("ffprobe")
         .args([
@@ -50,7 +44,7 @@ fn main() {
     }
 
     let ffprobe_stdout = String::from_utf8_lossy(&ffprobe_output.stdout);
-    println!("Saida do ffprobe:\n{}", ffprobe_stdout);
+    // println!("Saida do ffprobe:\n{}", ffprobe_stdout);
 
     let ffprobe_json: Value = serde_json::from_str(&ffprobe_stdout)
         .expect("Falha ao converter a saida do ffprobe em JSON");

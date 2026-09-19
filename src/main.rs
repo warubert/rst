@@ -1,6 +1,5 @@
 use std::env;
 use std::process::Command;
-
 use serde_json::Value;
 
 fn main() {

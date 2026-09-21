@@ -1,4 +1,5 @@
 use std::env;
+use std::io::{self, Write};
 use std::process::Command;
 use serde_json::Value;
 
@@ -101,6 +102,47 @@ fn main() {
             subtitle.index, subtitle.language, subtitle.is_sdh
         );
     }
+
+    if subtitle_streams.is_empty() {
+        println!("Nenhuma legenda encontrada no arquivo.");
+        return;
+    }
+
+    println!("\nOpcoes de linguas encontradas:");
+    for (position, subtitle) in subtitle_streams.iter().enumerate() {
+        let sdh_label = if subtitle.is_sdh { " (SDH)" } else { "" };
+        println!("- {}: {}{}", position + 1, subtitle.language, sdh_label);
+    }
+
+    let selected_subtitle = loop {
+        print!("\nDigite o numero da opcao desejada: ");
+        io::stdout().flush().expect("Falha ao atualizar terminal");
+
+        let mut input_line = String::new();
+        io::stdin()
+            .read_line(&mut input_line)
+            .expect("Falha ao ler entrada do usuario");
+
+        let parsed_option = match input_line.trim().parse::<usize>() {
+            Ok(value) => value,
+            Err(_) => {
+                println!("Entrada invalida. Digite um numero inteiro.");
+                continue;
+            }
+        };
+
+        if parsed_option == 0 || parsed_option > subtitle_streams.len() {
+            println!("Opcao invalida. Escolha um numero da lista.");
+            continue;
+        }
+
+        break &subtitle_streams[parsed_option - 1];
+    };
+
+    println!(
+        "Legenda selecionada -> index: {}, language: {}, is_sdh: {}",
+        selected_subtitle.index, selected_subtitle.language, selected_subtitle.is_sdh
+    );
 
     let ffprobe_stderr = String::from_utf8_lossy(&ffprobe_output.stderr);
     if !ffprobe_stderr.trim().is_empty() {

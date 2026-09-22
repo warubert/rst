@@ -1,5 +1,6 @@
 use std::env;
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::Command;
 use serde_json::Value;
 
@@ -143,6 +144,29 @@ fn main() {
         "Legenda selecionada -> index: {}, language: {}, is_sdh: {}",
         selected_subtitle.index, selected_subtitle.language, selected_subtitle.is_sdh
     );
+
+    let output_srt = Path::new(&input).with_extension("srt");
+    let output_srt_string = output_srt.to_string_lossy().to_string();
+    let map_argument = format!("0:{}", selected_subtitle.index);
+
+    println!(
+        "Executando: ffmpeg -i {} -map {} {}",
+        input, map_argument, output_srt_string
+    );
+
+    let ffmpeg_output = Command::new("ffmpeg")
+        .args(["-i", &input, "-map", &map_argument, &output_srt_string])
+        .output()
+        .expect("Falha ao executar ffmpeg");
+
+    if !ffmpeg_output.status.success() {
+        let ffmpeg_stderr = String::from_utf8_lossy(&ffmpeg_output.stderr);
+        eprintln!("Comando ffmpeg terminou com erro: {}", ffmpeg_output.status);
+        eprintln!("stderr do ffmpeg:\n{}", ffmpeg_stderr);
+        return;
+    }
+
+    println!("Legenda extraida com sucesso em: {}", output_srt_string);
 
     let ffprobe_stderr = String::from_utf8_lossy(&ffprobe_output.stderr);
     if !ffprobe_stderr.trim().is_empty() {

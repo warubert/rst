@@ -145,8 +145,35 @@ fn main() {
         selected_subtitle.index, selected_subtitle.language, selected_subtitle.is_sdh
     );
 
-    let output_srt = Path::new(&input).with_extension("srt");
-    let output_srt_string = output_srt.to_string_lossy().to_string();
+    let default_output_name = Path::new(&input)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("legenda")
+        .to_string();
+
+    let mut custom_name = String::new();
+    print!(
+        "\nDigite o nome da legenda de saida (padrao: {}.srt): ",
+        default_output_name
+    );
+    io::stdout().flush().expect("Falha ao atualizar terminal");
+
+    io::stdin()
+        .read_line(&mut custom_name)
+        .expect("Falha ao ler o nome da legenda");
+
+    let final_output_name = match custom_name.trim() {
+        "" => format!("{}.srt", default_output_name),
+        value => {
+            if value.to_lowercase().ends_with(".srt") {
+                value.to_string()
+            } else {
+                format!("{}.srt", value)
+            }
+        }
+    };
+
+    let output_srt_string = final_output_name;
     let map_argument = format!("0:{}", selected_subtitle.index);
 
     println!(

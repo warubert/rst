@@ -116,7 +116,7 @@ fn main() {
     }
 
     let selected_subtitle = loop {
-        print!("\nDigite o numero da opcao desejada: ");
+        print!("\nDigite o numero da opcao desejada (padrao: 1): ");
         io::stdout().flush().expect("Falha ao atualizar terminal");
 
         let mut input_line = String::new();
@@ -124,11 +124,16 @@ fn main() {
             .read_line(&mut input_line)
             .expect("Falha ao ler entrada do usuario");
 
-        let parsed_option = match input_line.trim().parse::<usize>() {
-            Ok(value) => value,
-            Err(_) => {
-                println!("Entrada invalida. Digite um numero inteiro.");
-                continue;
+        let trimmed = input_line.trim();
+        let parsed_option = if trimmed.is_empty() {
+            1
+        } else {
+            match trimmed.parse::<usize>() {
+                Ok(value) => value,
+                Err(_) => {
+                    println!("Entrada invalida. Digite um numero inteiro.");
+                    continue;
+                }
             }
         };
 

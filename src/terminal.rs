@@ -10,7 +10,7 @@ pub fn print_no_subtitles_found() {
     println!("Nenhuma legenda encontrada no arquivo.");
 }
 
-pub fn select_subtitle<'a>(subtitle_streams: &'a [Subtitle]) -> &'a Subtitle {
+pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> &Subtitle {
     println!("\nOpcoes de linguas encontradas:");
     for (position, subtitle) in subtitle_streams.iter().enumerate() {
         let sdh_label = if subtitle.is_sdh { " (SDH)" } else { "" };

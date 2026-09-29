@@ -2,6 +2,7 @@ use std::env;
 mod ffmpeg;
 mod ffprobe;
 mod terminal;
+mod tui;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -26,8 +27,9 @@ fn main() {
         return;
     }
 
-    let selected_subtitle = terminal::select_subtitle(&subtitle_streams);
-    let output_srt_string = terminal::prompt_output_name(&input);
+    let selected_index = tui::select_subtitle(&subtitle_streams);
+    let selected_subtitle = &subtitle_streams[selected_index];
+    let output_srt_string = tui::prompt_output_name(&input);
 
     terminal::print_ffmpeg_command(&input, selected_subtitle.index, &output_srt_string);
 

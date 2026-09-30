@@ -251,9 +251,7 @@ pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> usize {
                     std::process::exit(0);
                 }
                 KeyCode::Up => {
-                    if selected > 0 {
-                        selected -= 1;
-                    }
+                    selected = selected.saturating_sub(1);
                 }
                 KeyCode::Down => {
                     if selected + 1 < subtitle_streams.len() {

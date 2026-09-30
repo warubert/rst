@@ -14,6 +14,76 @@ use ratatui::{
 };
 use std::io;
 
+pub fn prompt_input_path() -> Option<String> {
+    enable_raw_mode().expect("Falha ao ativar modo raw");
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, cursor::Hide)
+        .expect("Falha ao entrar na tela alternada");
+
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend).expect("Falha ao inicializar terminal Ratatui");
+    let mut value = String::new();
+
+    loop {
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .margin(6)
+                    .constraints([Constraint::Length(4), Constraint::Length(3)])
+                    .split(area);
+
+                let title = Paragraph::new("Digite o caminho do arquivo de vídeo")
+                    .alignment(Alignment::Center)
+                    .block(Block::default().borders(Borders::ALL).title("RST"));
+                frame.render_widget(title, chunks[0]);
+
+                let field = Paragraph::new(value.as_str())
+                    .style(
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("Caminho do arquivo")
+                            .title_alignment(Alignment::Center),
+                    );
+                frame.render_widget(field, chunks[1]);
+            })
+            .expect("Falha ao renderizar interface");
+
+        if let Event::Key(key) = event::read().expect("Falha ao ler evento do teclado") {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Char(c) if !c.is_control() => value.push(c),
+                KeyCode::Backspace => {
+                    value.pop();
+                }
+                KeyCode::Esc => {
+                    disable_raw_mode().expect("Falha ao desabilitar modo raw");
+                    execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show,)
+                        .expect("Falha ao restaurar tela");
+                    return None;
+                }
+                KeyCode::Enter if !value.trim().is_empty() => break,
+                _ => {}
+            }
+        }
+    }
+
+    disable_raw_mode().expect("Falha ao desabilitar modo raw");
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show,)
+        .expect("Falha ao restaurar tela");
+
+    Some(value.trim().to_string())
+}
+
 pub fn prompt_output_name(input: &str) -> String {
     let default_output_name = input
         .rsplit_once('.')
@@ -22,7 +92,8 @@ pub fn prompt_output_name(input: &str) -> String {
 
     enable_raw_mode().expect("Falha ao ativar modo raw");
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, cursor::Hide).expect("Falha ao entrar na tela alternada");
+    execute!(stdout, EnterAlternateScreen, cursor::Hide)
+        .expect("Falha ao entrar na tela alternada");
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).expect("Falha ao inicializar terminal Ratatui");
@@ -36,10 +107,7 @@ pub fn prompt_output_name(input: &str) -> String {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .margin(6)
-                    .constraints([
-                        Constraint::Length(4),
-                        Constraint::Length(3),
-                    ])
+                    .constraints([Constraint::Length(4), Constraint::Length(3)])
                     .split(area);
 
                 let title = Paragraph::new("Nome da legenda de saída")
@@ -54,7 +122,11 @@ pub fn prompt_output_name(input: &str) -> String {
                 };
 
                 let field = Paragraph::new(display)
-                    .style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+                    .style(
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    )
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
@@ -86,12 +158,8 @@ pub fn prompt_output_name(input: &str) -> String {
     }
 
     disable_raw_mode().expect("Falha ao desabilitar modo raw");
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        cursor::Show,
-    )
-    .expect("Falha ao restaurar tela");
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show,)
+        .expect("Falha ao restaurar tela");
 
     let final_name = if value.trim().is_empty() {
         default_output_name.clone()
@@ -110,7 +178,8 @@ pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> usize {
     enable_raw_mode().expect("Falha ao ativar modo raw");
 
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, cursor::Hide).expect("Falha ao entrar na tela alternada");
+    execute!(stdout, EnterAlternateScreen, cursor::Hide)
+        .expect("Falha ao entrar na tela alternada");
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).expect("Falha ao inicializar terminal Ratatui");
@@ -124,10 +193,7 @@ pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> usize {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .margin(2)
-                    .constraints([
-                        Constraint::Min(8),
-                        Constraint::Length(4),
-                    ])
+                    .constraints([Constraint::Min(8), Constraint::Length(4)])
                     .split(area);
 
                 let items: Vec<ListItem> = subtitle_streams
@@ -147,7 +213,11 @@ pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> usize {
                 list_state.select(Some(selected));
 
                 let subtitles = List::new(items)
-                    .block(Block::default().title("Legendas disponíveis").borders(Borders::ALL))
+                    .block(
+                        Block::default()
+                            .title("Legendas disponíveis")
+                            .borders(Borders::ALL),
+                    )
                     .highlight_style(
                         Style::default()
                             .fg(Color::Black)
@@ -158,9 +228,11 @@ pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> usize {
 
                 frame.render_stateful_widget(subtitles, chunks[0], &mut list_state);
 
-                let help = Paragraph::new("Use as setas ↑/↓ para mover\nEnter para confirmar\nq ou Esc para sair")
-                    .alignment(Alignment::Center)
-                    .block(Block::default().borders(Borders::ALL).title("Ações"));
+                let help = Paragraph::new(
+                    "Use as setas ↑/↓ para mover\nEnter para confirmar\nq ou Esc para sair",
+                )
+                .alignment(Alignment::Center)
+                .block(Block::default().borders(Borders::ALL).title("Ações"));
 
                 frame.render_widget(help, chunks[1]);
             })
@@ -174,12 +246,8 @@ pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> usize {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
                     disable_raw_mode().expect("Falha ao desabilitar modo raw");
-                    execute!(
-                        terminal.backend_mut(),
-                        LeaveAlternateScreen,
-                        cursor::Show,
-                    )
-                    .expect("Falha ao restaurar tela");
+                    execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show,)
+                        .expect("Falha ao restaurar tela");
                     std::process::exit(0);
                 }
                 KeyCode::Up => {
@@ -199,12 +267,8 @@ pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> usize {
     }
 
     disable_raw_mode().expect("Falha ao desabilitar modo raw");
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        cursor::Show,
-    )
-    .expect("Falha ao restaurar tela");
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show,)
+        .expect("Falha ao restaurar tela");
 
     selected
 }

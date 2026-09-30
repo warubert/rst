@@ -1,18 +1,18 @@
 use std::env;
+
 mod ffmpeg;
 mod ffprobe;
 mod terminal;
 mod tui;
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-
-    if args.len() < 2 {
-        terminal::print_error("Please provide a command-line argument.");
-        return;
-    }
-
-    let input = args[1].clone();
+    let input = match env::args().nth(1) {
+        Some(path) => path,
+        None => match tui::prompt_input_path() {
+            Some(path) => path,
+            None => return,
+        },
+    };
 
     let subtitle_streams = match ffprobe::get_subtitle_streams(&input) {
         Ok(streams) => streams,
@@ -33,7 +33,9 @@ fn main() {
 
     terminal::print_ffmpeg_command(&input, selected_subtitle.index, &output_srt_string);
 
-    if let Err(error) = ffmpeg::extract_subtitle(&input, selected_subtitle.index, &output_srt_string) {
+    if let Err(error) =
+        ffmpeg::extract_subtitle(&input, selected_subtitle.index, &output_srt_string)
+    {
         terminal::print_error(&error);
         return;
     }

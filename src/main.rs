@@ -8,10 +8,16 @@ mod tui;
 fn main() {
     let input = match env::args().nth(1) {
         Some(path) => path,
-        None => match tui::prompt_input_path() {
-            Some(path) => path,
-            None => return,
-        },
+        None => {
+            if !tui::main_menu() {
+                return;
+            }
+
+            match tui::prompt_input_path() {
+                Some(path) => path,
+                None => return,
+            }
+        }
     };
 
     let subtitle_streams = match ffprobe::get_subtitle_streams(&input) {

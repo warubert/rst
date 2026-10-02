@@ -14,6 +14,84 @@ use ratatui::{
 };
 use std::io;
 
+pub fn main_menu() -> bool {
+    enable_raw_mode().expect("Falha ao ativar modo raw");
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, cursor::Hide)
+        .expect("Falha ao entrar na tela alternada");
+
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend).expect("Falha ao inicializar terminal Ratatui");
+    let options = [
+        "1) Extrair legenda",
+        "2) Traduzir",
+        "3) Extrair e traduzir",
+        "4) Opções",
+        "5) Sair",
+    ];
+    let mut selected = 0usize;
+
+    let should_extract = loop {
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .margin(2)
+                    .constraints([Constraint::Min(7), Constraint::Length(3)])
+                    .split(area);
+
+                let items: Vec<ListItem> = options
+                    .iter()
+                    .map(|option| ListItem::new(*option))
+                    .collect();
+                let mut list_state = ListState::default();
+                list_state.select(Some(selected));
+
+                let menu = List::new(items)
+                    .block(Block::default().title("RST").borders(Borders::ALL))
+                    .highlight_style(
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::LightBlue)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .highlight_symbol(">> ");
+                frame.render_stateful_widget(menu, chunks[0], &mut list_state);
+
+                let help = Paragraph::new("Use as setas ↑/↓ para mover e Enter para selecionar")
+                    .alignment(Alignment::Center)
+                    .block(Block::default().borders(Borders::ALL).title("Ações"));
+                frame.render_widget(help, chunks[1]);
+            })
+            .expect("Falha ao renderizar interface");
+
+        if let Event::Key(key) = event::read().expect("Falha ao ler evento do teclado") {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Up => selected = selected.saturating_sub(1),
+                KeyCode::Down => selected = (selected + 1).min(options.len() - 1),
+                KeyCode::Esc => break false,
+                KeyCode::Enter => match selected {
+                    0 => break true,
+                    4 => break false,
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    };
+
+    disable_raw_mode().expect("Falha ao desabilitar modo raw");
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show,)
+        .expect("Falha ao restaurar tela");
+
+    should_extract
+}
+
 pub fn prompt_input_path() -> Option<String> {
     enable_raw_mode().expect("Falha ao ativar modo raw");
     let mut stdout = io::stdout();

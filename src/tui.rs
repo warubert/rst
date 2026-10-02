@@ -24,7 +24,7 @@ pub fn main_menu() -> bool {
     let mut terminal = Terminal::new(backend).expect("Falha ao inicializar terminal Ratatui");
     let options = [
         "1) Extrair legenda",
-        "2) Traduzir",
+        "2) Traduzir legenda",
         "3) Extrair e traduzir",
         "4) Opções",
         "5) Sair",
@@ -38,8 +38,43 @@ pub fn main_menu() -> bool {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .margin(2)
-                    .constraints([Constraint::Min(7), Constraint::Length(3)])
+                    .constraints([
+                        Constraint::Length(9),
+                        Constraint::Length(1),
+                        Constraint::Min(7),
+                        Constraint::Length(3),
+                    ])
                     .split(area);
+
+                let logo_rows = [
+                    ("###### ", " ######", "#######"),
+                    ("##   ##", "##     ", "  ###  "),
+                    ("##   ##", "##     ", "  ###  "),
+                    ("##   ##", " ######", "  ###  "),
+                    ("###### ", "     ##", "  ###  "),
+                    ("## ##  ", "     ##", "  ###  "),
+                    ("##  ## ", "     ##", "  ###  "),
+                    ("##   ##", "##   ##", "  ###  "),
+                    ("##   ##", " ######", "  ###  "),
+                ];
+                let logo = logo_rows
+                    .iter()
+                    .map(|(r, s, t)| format!("{r}   {s}   {t}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let logo = Paragraph::new(logo)
+                .style(
+                    Style::default()
+                        .fg(Color::LightCyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .alignment(Alignment::Center);
+                frame.render_widget(logo, chunks[0]);
+
+                let tagline = Paragraph::new("Rust Subtitle Tools")
+                    .style(Style::default().fg(Color::Gray))
+                    .alignment(Alignment::Center);
+                frame.render_widget(tagline, chunks[1]);
 
                 let items: Vec<ListItem> = options
                     .iter()
@@ -49,7 +84,7 @@ pub fn main_menu() -> bool {
                 list_state.select(Some(selected));
 
                 let menu = List::new(items)
-                    .block(Block::default().title("RST").borders(Borders::ALL))
+                    .block(Block::default().title("Menu principal").borders(Borders::ALL))
                     .highlight_style(
                         Style::default()
                             .fg(Color::Black)
@@ -57,12 +92,12 @@ pub fn main_menu() -> bool {
                             .add_modifier(Modifier::BOLD),
                     )
                     .highlight_symbol(">> ");
-                frame.render_stateful_widget(menu, chunks[0], &mut list_state);
+                frame.render_stateful_widget(menu, chunks[2], &mut list_state);
 
                 let help = Paragraph::new("Use as setas ↑/↓ para mover e Enter para selecionar")
                     .alignment(Alignment::Center)
                     .block(Block::default().borders(Borders::ALL).title("Ações"));
-                frame.render_widget(help, chunks[1]);
+                frame.render_widget(help, chunks[3]);
             })
             .expect("Falha ao renderizar interface");
 

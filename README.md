@@ -1,37 +1,58 @@
-# rst
+# RST (Rust Subtitle Tools)
 
-Extrator de legendas em Rust.
+Ferramenta de terminal escrita em Rust para extrair legendas de arquivos de vídeo e salvá-las em formato `.srt`.
 
-Este projeto usa ffprobe para detectar as streams de legenda de um arquivo de vídeo e ffmpeg para exportar a legenda selecionada em formato `.srt`.
+O RST usa `ffprobe` para detectar as faixas de legenda e `ffmpeg` para exportar a faixa selecionada.
 
 ## Funcionalidades
 
-- Detecta automaticamente as legendas disponíveis no arquivo
+- Detecta as faixas de legenda disponíveis em um arquivo de vídeo
+- Permite selecionar a faixa a extrair
+- Salva a legenda selecionada em formato `.srt`
+- Oferece uma interface interativa de terminal com Ratatui
+
+As opções de tradução e configurações aparecem no menu, mas ainda não têm funcionalidade implementada.
 
 ## Requisitos
 
-Instale o FFmpeg no sistema:
+É necessário ter o FFmpeg instalado e os comandos `ffmpeg` e `ffprobe` disponíveis no `PATH`:
 
 - Linux: normalmente via gerenciador de pacotes (`sudo apt install ffmpeg`, `sudo dnf install ffmpeg`, etc.)
 - macOS: `brew install ffmpeg`
 - Windows: instalar FFmpeg e garantir que `ffmpeg` e `ffprobe` fiquem no PATH
 
-## Como usar
+Também é necessário ter o Rust e o Cargo instalados para compilar o projeto.
+
+## Compilar
 
 ```bash
-cargo run -- AloneAustraliaS02E05.mkv
+cargo build --release
 ```
 
-## Build
+O executável será criado em `target/release/rst`.
+
+## Uso
+
+Inicie sem argumentos para abrir o menu:
 
 ```bash
-cargo build
+cargo run
 ```
 
-## Observação
+Use as setas para navegar e Enter para selecionar. Escolha **Extrair legenda** para informar o caminho do vídeo, selecionar uma faixa e definir o nome do arquivo `.srt` de saída.
 
-O comando final executado segue a lógica:
+Também é possível informar o arquivo de vídeo como argumento. Nesse caso, o menu inicial é ignorado e o programa segue diretamente para a seleção da legenda:
 
 ```bash
-ffmpeg -i arquivo.mkv -map 0:[indice_selecionado] arquivo_saida.srt
+cargo run -- "video.mkv"
 ```
+
+## Extração
+
+O comando FFmpeg usado para extrair a faixa selecionada segue este formato:
+
+```bash
+ffmpeg -i arquivo.mkv -map 0:INDICE_DA_FAIXA arquivo_saida.srt
+```
+
+Se o nome de saída não for informado, o programa usa o nome do arquivo de vídeo com a extensão `.srt`.

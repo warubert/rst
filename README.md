@@ -56,3 +56,5 @@ ffmpeg -i arquivo.mkv -map 0:INDICE_DA_FAIXA arquivo_saida.srt
 ```
 
 Se o nome de saída não for informado, o programa usa o nome do arquivo de vídeo com a extensão `.srt`.
+
+tradução em desenvolvimento

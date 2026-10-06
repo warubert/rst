@@ -1,14 +1,16 @@
+use crate::interfaces::probe::{Subtitle, SubtitleProbe};
 use serde_json::Value;
 use std::process::Command;
 
-#[derive(Debug)]
-pub struct Subtitle {
-    pub index: i64,
-    pub language: String,
-    pub is_sdh: bool,
+pub struct Ffprobe;
+
+impl SubtitleProbe for Ffprobe {
+    fn get_subtitle_streams(&self, input: &str) -> Result<Vec<Subtitle>, String> {
+        get_subtitle_streams(input)
+    }
 }
 
-pub fn get_subtitle_streams(input: &str) -> Result<Vec<Subtitle>, String> {
+fn get_subtitle_streams(input: &str) -> Result<Vec<Subtitle>, String> {
     let ffprobe_output = Command::new("ffprobe")
         .args([
             "-v",

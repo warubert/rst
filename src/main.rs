@@ -1,7 +1,10 @@
 use std::env;
 
+use interfaces::probe::SubtitleProbe;
+
 mod ffmpeg;
 mod ffprobe;
+mod interfaces;
 mod terminal;
 mod tui;
 
@@ -20,7 +23,8 @@ fn main() {
         }
     };
 
-    let subtitle_streams = match ffprobe::get_subtitle_streams(&input) {
+    let probe = ffprobe::Ffprobe;
+    let subtitle_streams = match probe.get_subtitle_streams(&input) {
         Ok(streams) => streams,
         Err(error) => {
             terminal::print_error(&error);

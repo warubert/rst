@@ -1,4 +1,4 @@
-use crate::ffprobe::Subtitle;
+use crate::interfaces::probe::Subtitle;
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEventKind},

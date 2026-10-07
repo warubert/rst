@@ -1,6 +1,6 @@
 use std::env;
 
-use interfaces::probe::SubtitleProbe;
+use interfaces::{ffmpeg::SubtitleExtractor, probe::SubtitleProbe};
 
 mod ffmpeg;
 mod ffprobe;
@@ -43,9 +43,12 @@ fn main() {
 
     terminal::print_ffmpeg_command(&input, selected_subtitle.index, &output_srt_string);
 
-    if let Err(error) =
-        ffmpeg::extract_subtitle(&input, selected_subtitle.index, &output_srt_string)
-    {
+    let extractor = ffmpeg::Ffmpeg;
+    if let Err(error) = extractor.extract_subtitle(
+        &input,
+        selected_subtitle.index,
+        &output_srt_string,
+    ) {
         terminal::print_error(&error);
         return;
     }

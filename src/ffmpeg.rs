@@ -1,6 +1,20 @@
+use crate::interfaces::ffmpeg::SubtitleExtractor;
 use std::process::Command;
 
-pub fn extract_subtitle(input: &str, subtitle_index: i64, output_srt: &str) -> Result<(), String> {
+pub struct Ffmpeg;
+
+impl SubtitleExtractor for Ffmpeg {
+    fn extract_subtitle(
+        &self,
+        input: &str,
+        subtitle_index: i64,
+        output_srt: &str,
+    ) -> Result<(), String> {
+        extract_subtitle(input, subtitle_index, output_srt)
+    }
+}
+
+fn extract_subtitle(input: &str, subtitle_index: i64, output_srt: &str) -> Result<(), String> {
     let map_argument = format!("0:{subtitle_index}");
 
     let ffmpeg_output = Command::new("ffmpeg")

@@ -10,8 +10,10 @@ O RST usa `ffprobe` para detectar as faixas de legenda e `ffmpeg` para exportar 
 - Permite selecionar a faixa a extrair
 - Salva a legenda selecionada em formato `.srt`
 - Oferece uma interface interativa de terminal com Ratatui
+- Disponibiliza a interface em português, inglês e espanhol
+- Detecta o idioma do sistema na primeira execução e permite alterá-lo em **Opções**
 
-As opções de tradução e configurações aparecem no menu, mas ainda não têm funcionalidade implementada.
+O idioma selecionado em **Opções** é salvo nas configurações do usuário. A tradução de legendas ainda está em desenvolvimento.
 
 ## Requisitos
 
@@ -56,5 +58,3 @@ ffmpeg -i arquivo.mkv -map 0:INDICE_DA_FAIXA arquivo_saida.srt
 ```
 
 Se o nome de saída não for informado, o programa usa o nome do arquivo de vídeo com a extensão `.srt`.
-
-função tradução em desenvolvimento

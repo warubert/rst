@@ -1,4 +1,5 @@
 use crate::interfaces::probe::{Subtitle, SubtitleProbe};
+use rust_i18n::t;
 use serde_json::Value;
 use std::process::Command;
 
@@ -22,19 +23,21 @@ fn get_subtitle_streams(input: &str) -> Result<Vec<Subtitle>, String> {
             input,
         ])
         .output()
-        .map_err(|error| format!("Falha ao executar ffprobe: {error}"))?;
+        .map_err(|error| t!("errors.ffprobe_start", error = error).to_string())?;
 
     if !ffprobe_output.status.success() {
         let ffprobe_stderr = String::from_utf8_lossy(&ffprobe_output.stderr);
-        return Err(format!(
-            "Comando ffprobe terminou com erro: {}\nstderr do ffprobe:\n{}",
-            ffprobe_output.status, ffprobe_stderr
-        ));
+        return Err(t!(
+            "errors.ffprobe_status",
+            status = ffprobe_output.status,
+            stderr = ffprobe_stderr
+        )
+        .to_string());
     }
 
     let ffprobe_stdout = String::from_utf8_lossy(&ffprobe_output.stdout);
     let ffprobe_json: Value = serde_json::from_str(&ffprobe_stdout)
-        .map_err(|error| format!("Falha ao converter a saida do ffprobe em JSON: {error}"))?;
+        .map_err(|error| t!("errors.ffprobe_json", error = error).to_string())?;
 
     let subtitle_streams = ffprobe_json
         .get("streams")
@@ -51,8 +54,8 @@ fn get_subtitle_streams(input: &str) -> Result<Vec<Subtitle>, String> {
                         .get("tags")
                         .and_then(|tags| tags.get("language"))
                         .and_then(Value::as_str)
-                        .unwrap_or("unknown")
-                        .to_string();
+                        .map(str::to_string)
+                        .unwrap_or_else(|| t!("tui.unknown_language").to_string());
                     let is_sdh = stream
                         .get("disposition")
                         .and_then(|disposition| disposition.get("hearing_impaired"))

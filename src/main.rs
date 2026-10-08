@@ -1,3 +1,5 @@
+rust_i18n::i18n!("locales", fallback = "en");
+
 use std::env;
 
 use interfaces::{ffmpeg::SubtitleExtractor, probe::SubtitleProbe};
@@ -5,10 +7,13 @@ use interfaces::{ffmpeg::SubtitleExtractor, probe::SubtitleProbe};
 mod ffmpeg;
 mod ffprobe;
 mod interfaces;
+mod localization;
 mod terminal;
 mod tui;
 
 fn main() {
+    localization::initialize();
+
     let input = match env::args().nth(1) {
         Some(path) => path,
         None => {
@@ -44,11 +49,9 @@ fn main() {
     terminal::print_ffmpeg_command(&input, selected_subtitle.index, &output_srt_string);
 
     let extractor = ffmpeg::Ffmpeg;
-    if let Err(error) = extractor.extract_subtitle(
-        &input,
-        selected_subtitle.index,
-        &output_srt_string,
-    ) {
+    if let Err(error) =
+        extractor.extract_subtitle(&input, selected_subtitle.index, &output_srt_string)
+    {
         terminal::print_error(&error);
         return;
     }

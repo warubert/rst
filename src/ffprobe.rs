@@ -36,7 +36,11 @@ fn get_subtitle_streams(input: &str) -> Result<Vec<Subtitle>, String> {
     }
 
     let ffprobe_stdout = String::from_utf8_lossy(&ffprobe_output.stdout);
-    let ffprobe_json: Value = serde_json::from_str(&ffprobe_stdout)
+    parse_subtitle_streams(&ffprobe_stdout)
+}
+
+fn parse_subtitle_streams(ffprobe_stdout: &str) -> Result<Vec<Subtitle>, String> {
+    let ffprobe_json: Value = serde_json::from_str(ffprobe_stdout)
         .map_err(|error| t!("errors.ffprobe_json", error = error).to_string())?;
 
     let subtitle_streams = ffprobe_json
@@ -74,4 +78,72 @@ fn get_subtitle_streams(input: &str) -> Result<Vec<Subtitle>, String> {
         .unwrap_or_default();
 
     Ok(subtitle_streams)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_subtitle_streams;
+
+    #[test]
+    fn parses_subtitle_streams_and_skips_other_streams() {
+        let output = r#"{
+            "streams": [
+                {"index": 0, "codec_type": "video"},
+                {
+                    "index": 3,
+                    "codec_type": "subtitle",
+                    "tags": {"language": "pt-BR"},
+                    "disposition": {"hearing_impaired": 1}
+                },
+                {
+                    "index": 4,
+                    "codec_type": "subtitle",
+                    "tags": {"language": "en"},
+                    "disposition": {"hearing_impaired": 0}
+                }
+            ]
+        }"#;
+
+        let subtitles = parse_subtitle_streams(output).unwrap();
+
+        assert_eq!(subtitles.len(), 2);
+        assert_eq!(subtitles[0].index, 3);
+        assert_eq!(subtitles[0].language, "pt-BR");
+        assert!(subtitles[0].is_sdh);
+        assert_eq!(subtitles[1].index, 4);
+        assert_eq!(subtitles[1].language, "en");
+        assert!(!subtitles[1].is_sdh);
+    }
+
+    #[test]
+    fn uses_defaults_when_subtitle_metadata_is_missing() {
+        let subtitles = parse_subtitle_streams(
+            r#"{"streams":[{"codec_type":"subtitle","tags":{},"disposition":{}}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(subtitles.len(), 1);
+        assert_eq!(subtitles[0].index, -1);
+        assert!(!subtitles[0].language.is_empty());
+        assert!(!subtitles[0].is_sdh);
+    }
+
+    #[test]
+    fn returns_empty_list_when_no_subtitles_exist() {
+        assert!(
+            parse_subtitle_streams(r#"{"streams":[{"codec_type":"video"}]}"#)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            parse_subtitle_streams(r#"{"format":{}}"#)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn reports_invalid_json() {
+        assert!(parse_subtitle_streams("not json").is_err());
+    }
 }

@@ -16,10 +16,8 @@ impl SubtitleExtractor for Ffmpeg {
 }
 
 fn extract_subtitle(input: &str, subtitle_index: i64, output_srt: &str) -> Result<(), String> {
-    let map_argument = format!("0:{subtitle_index}");
-
     let ffmpeg_output = Command::new("ffmpeg")
-        .args(["-i", input, "-map", &map_argument, output_srt])
+        .args(extraction_args(input, subtitle_index, output_srt))
         .output()
         .map_err(|error| t!("errors.ffmpeg_start", error = error).to_string())?;
 
@@ -34,4 +32,35 @@ fn extract_subtitle(input: &str, subtitle_index: i64, output_srt: &str) -> Resul
     }
 
     Ok(())
+}
+
+fn extraction_args(input: &str, subtitle_index: i64, output_srt: &str) -> [String; 5] {
+    [
+        "-i".to_string(),
+        input.to_string(),
+        "-map".to_string(),
+        format!("0:{subtitle_index}"),
+        output_srt.to_string(),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extraction_args;
+
+    #[test]
+    fn maps_selected_stream_and_output_path() {
+        assert_eq!(
+            extraction_args("episode file.mkv", 7, "episode.srt"),
+            ["-i", "episode file.mkv", "-map", "0:7", "episode.srt"]
+        );
+    }
+
+    #[test]
+    fn maps_negative_stream_index_without_changing_the_input() {
+        assert_eq!(
+            extraction_args("input.mkv", -1, "output.srt"),
+            ["-i", "input.mkv", "-map", "0:-1", "output.srt"]
+        );
+    }
 }

@@ -12,8 +12,9 @@ O RST usa `ffprobe` para detectar as faixas de legenda e `ffmpeg` para exportar 
 - Oferece uma interface interativa de terminal com Ratatui
 - Disponibiliza a interface em português, inglês e espanhol
 - Detecta o idioma do sistema na primeira execução e permite alterá-lo em **Opções**
+- Usa inglês quando o idioma do sistema não é português, inglês ou espanhol
 
-O idioma selecionado em **Opções** é salvo nas configurações do usuário. A tradução de legendas ainda está em desenvolvimento.
+O idioma escolhido em **Opções** é salvo nas configurações do usuário e tem prioridade sobre o idioma do sistema nas próximas execuções. As opções **Traduzir legenda** e **Extrair e traduzir** ainda não estão implementadas.
 
 ## Requisitos
 
@@ -24,6 +25,32 @@ O idioma selecionado em **Opções** é salvo nas configurações do usuário. A
 - Windows: instalar FFmpeg e garantir que `ffmpeg` e `ffprobe` fiquem no PATH
 
 Também é necessário ter o Rust e o Cargo instalados para compilar o projeto.
+
+## Testes
+
+Execute a suíte automatizada com:
+
+```bash
+cargo test
+```
+
+Os testes cobrem o parsing das faixas de legenda, os argumentos usados na extração, o fluxo de entrada com e sem argumento, as ações do menu, a geração do nome `.srt`, a seleção e persistência do idioma e a renderização das telas Ratatui.
+
+Para verificar formatação, compilação e lint:
+
+```bash
+cargo fmt --check
+cargo check
+cargo clippy -- -D warnings
+```
+
+## Preferência de idioma
+
+O idioma selecionado é gravado no arquivo `rst/language` dentro do diretório de configuração do usuário:
+
+- Linux: `~/.config/rst/language` (ou `$XDG_CONFIG_HOME/rst/language`, se definido)
+- macOS: `~/Library/Application Support/rst/language`
+- Windows: `%APPDATA%\rst\language`
 
 ## Compilar
 

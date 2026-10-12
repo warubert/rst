@@ -23,3 +23,22 @@ pub fn print_ffmpeg_command(input: &str, subtitle_index: i64, output_srt: &str) 
 pub fn print_success(output_srt: &str) {
     println!("{}", t!("terminal.success", output = output_srt));
 }
+
+pub fn print_translating(input: &str, source: &str, target: &str) {
+    println!(
+        "{}",
+        t!(
+            "terminal.translating",
+            input = input,
+            source = source,
+            target = target
+        )
+    );
+}
+
+pub fn print_translation_success(output_srt: &str) {
+    println!(
+        "{}",
+        t!("terminal.translation_success", output = output_srt)
+    );
+}

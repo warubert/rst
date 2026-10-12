@@ -23,14 +23,23 @@ fn require_ui<T, E>(result: Result<T, E>) -> T {
 #[derive(Debug, PartialEq, Eq)]
 enum MenuAction {
     Extract,
+    Translate,
     Noop,
     Language,
+    Exit,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum MenuChoice {
+    Extract,
+    Translate,
     Exit,
 }
 
 fn menu_action(selected: usize) -> MenuAction {
     match selected {
         0 => MenuAction::Extract,
+        1 => MenuAction::Translate,
         3 => MenuAction::Language,
         4 => MenuAction::Exit,
         _ => MenuAction::Noop,
@@ -272,11 +281,11 @@ fn restore_terminal(terminal: &mut TuiTerminal) {
     ));
 }
 
-pub fn main_menu() -> bool {
+pub fn main_menu() -> MenuChoice {
     let mut terminal = start_terminal();
     let mut selected = 0usize;
 
-    let should_extract = 'menu: loop {
+    let choice = 'menu: loop {
         let locale = rust_i18n::locale();
         let options = main_menu_options(locale.as_ref());
         require_ui(terminal.draw(|frame| {
@@ -291,11 +300,12 @@ pub fn main_menu() -> bool {
             match key.code {
                 KeyCode::Up => selected = previous_selection(selected),
                 KeyCode::Down => selected = next_selection(selected, options.len()),
-                KeyCode::Esc => break 'menu false,
+                KeyCode::Esc => break 'menu MenuChoice::Exit,
                 KeyCode::Enter => match menu_action(selected) {
-                    MenuAction::Extract => break 'menu true,
+                    MenuAction::Extract => break 'menu MenuChoice::Extract,
+                    MenuAction::Translate => break 'menu MenuChoice::Translate,
                     MenuAction::Language => language_menu(&mut terminal),
-                    MenuAction::Exit => break 'menu false,
+                    MenuAction::Exit => break 'menu MenuChoice::Exit,
                     MenuAction::Noop => continue,
                 },
                 _ => {}
@@ -305,7 +315,125 @@ pub fn main_menu() -> bool {
 
     restore_terminal(&mut terminal);
 
-    should_extract
+    choice
+}
+
+fn draw_prompt(frame: &mut Frame<'_>, title: &str, field_title: &str, display: &str) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(6)
+        .constraints([Constraint::Length(4), Constraint::Length(3)])
+        .split(area);
+
+    let title = Paragraph::new(title.to_string())
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).title("RST"));
+    frame.render_widget(title, chunks[0]);
+
+    let field = Paragraph::new(display.to_string())
+        .style(
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(field_title.to_string())
+                .title_alignment(Alignment::Center),
+        );
+    frame.render_widget(field, chunks[1]);
+}
+
+fn resolve_prompt_value(value: &str, default: Option<&str>) -> Option<String> {
+    let value = value.trim();
+    if !value.is_empty() {
+        Some(value.to_string())
+    } else {
+        default.map(str::to_string)
+    }
+}
+
+fn prompt_line(title: &str, field_title: &str, default: Option<&str>) -> Option<String> {
+    let mut terminal = start_terminal();
+    let mut value = String::new();
+
+    let result = loop {
+        let display = match (value.is_empty(), default) {
+            (true, Some(default)) => t!("tui.output_default", name = default).to_string(),
+            _ => value.clone(),
+        };
+        require_ui(terminal.draw(|frame| draw_prompt(frame, title, field_title, &display)));
+
+        if let Event::Key(key) = require_ui(event::read()) {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Char(c) if !c.is_control() => value.push(c),
+                KeyCode::Backspace => {
+                    value.pop();
+                }
+                KeyCode::Esc => break None,
+                KeyCode::Enter => {
+                    if let Some(resolved) = resolve_prompt_value(&value, default) {
+                        break Some(resolved);
+                    }
+                }
+                _ => {}
+            }
+        }
+    };
+
+    restore_terminal(&mut terminal);
+    result
+}
+
+pub fn prompt_srt_path() -> Option<String> {
+    prompt_line(
+        &t!("translate.srt_path_prompt"),
+        &t!("translate.srt_path_field"),
+        None,
+    )
+}
+
+pub fn prompt_source_language() -> Option<String> {
+    prompt_line(
+        &t!("translate.source_prompt"),
+        &t!("translate.source_field"),
+        Some("auto"),
+    )
+    .map(|language| normalize_language(&language))
+}
+
+pub fn prompt_target_language() -> Option<String> {
+    let default = rust_i18n::locale().to_string();
+    prompt_line(
+        &t!("translate.target_prompt"),
+        &t!("translate.target_field"),
+        Some(&default),
+    )
+    .map(|language| normalize_language(&language))
+}
+
+pub fn prompt_translation_output_name(input: &str, target: &str) -> Option<String> {
+    let default = default_translation_name(input, target);
+    prompt_line(
+        &t!("translate.output_prompt"),
+        &t!("tui.output_file"),
+        Some(&default),
+    )
+    .map(|name| finalize_output_name(&default, &name))
+}
+
+fn normalize_language(language: &str) -> String {
+    language.trim().to_ascii_lowercase()
+}
+
+fn default_translation_name(input: &str, target: &str) -> String {
+    format!("{}-{}", default_output_name(input), target)
 }
 
 fn language_menu(terminal: &mut TuiTerminal) {
@@ -504,9 +632,10 @@ pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        MenuAction, default_output_name, draw_language_menu, draw_main_menu,
-        draw_subtitle_selection, finalize_output_name, main_menu_options, menu_action,
-        next_selection, previous_selection,
+        MenuAction, default_output_name, default_translation_name, draw_language_menu,
+        draw_main_menu, draw_prompt, draw_subtitle_selection, finalize_output_name,
+        main_menu_options, menu_action, next_selection, normalize_language, previous_selection,
+        resolve_prompt_value,
     };
     use crate::interfaces::probe::Subtitle;
     use ratatui::{Terminal, backend::TestBackend};
@@ -524,7 +653,7 @@ mod tests {
     #[test]
     fn maps_main_menu_options_to_their_actions() {
         assert_eq!(menu_action(0), MenuAction::Extract);
-        assert_eq!(menu_action(1), MenuAction::Noop);
+        assert_eq!(menu_action(1), MenuAction::Translate);
         assert_eq!(menu_action(2), MenuAction::Noop);
         assert_eq!(menu_action(3), MenuAction::Language);
         assert_eq!(menu_action(4), MenuAction::Exit);
@@ -557,6 +686,48 @@ mod tests {
     #[test]
     fn blank_output_name_uses_video_name_as_default() {
         assert_eq!(finalize_output_name("episode", "  "), "episode.srt");
+    }
+
+    #[test]
+    fn suggests_translation_name_from_input_and_target_language() {
+        let default = default_translation_name("AloneS13E13.srt", "pt");
+        assert_eq!(default, "AloneS13E13-pt");
+        assert_eq!(finalize_output_name(&default, ""), "AloneS13E13-pt.srt");
+        assert_eq!(
+            default_translation_name("dir.v2/Alone.srt", "es"),
+            "dir.v2/Alone-es"
+        );
+    }
+
+    #[test]
+    fn prompt_value_falls_back_to_default_only_when_blank() {
+        assert_eq!(
+            resolve_prompt_value("  en ", Some("pt")).as_deref(),
+            Some("en")
+        );
+        assert_eq!(resolve_prompt_value("", Some("pt")).as_deref(), Some("pt"));
+        assert_eq!(resolve_prompt_value("   ", None), None);
+    }
+
+    #[test]
+    fn normalizes_language_codes() {
+        assert_eq!(normalize_language(" PT-br "), "pt-br");
+        assert_eq!(normalize_language("Auto"), "auto");
+    }
+
+    #[test]
+    fn renders_prompt_title_field_and_value() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| draw_prompt(frame, "Target language", "Language", "pt (default)"))
+            .unwrap();
+
+        let text = rendered_text(&terminal);
+        assert!(text.contains("Target language"));
+        assert!(text.contains("Language"));
+        assert!(text.contains("pt (default)"));
     }
 
     #[test]

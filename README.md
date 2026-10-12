@@ -98,8 +98,6 @@ Escolha **Traduzir legenda** no menu. O programa pergunta, em ordem:
 
 Os tempos e as tags de posição (como `{\an8}`) são preservados. As legendas são enviadas em lotes de até 100 textos ou 4000 caracteres, com até 4 requisições simultâneas e novas tentativas em caso de falha.
 
-A tradução usa um endpoint não oficial do Google Tradutor e exige conexão com a internet e uma chave de API.
-
 ### Chave de API
 
 O endpoint rejeita requisições sem uma chave, e a chave não faz parte do código para não ser versionada. O programa a lê da variável de ambiente `GOOGLE_TRANSLATE_API_KEY`, que pode ser definida no ambiente ou em um arquivo `.env` na pasta onde o programa é executado (carregado automaticamente).
@@ -130,3 +128,14 @@ O teste com o serviço real é ignorado por padrão e usa a chave do `.env`:
 ```bash
 cargo test translates_the_sample_file_with_the_real_service -- --ignored
 ```
+
+### Em desenvolvimento
+
+- testar metodo de tradução sem api key
+- setar chave de api pelas opçoes
+- fluxo unico extração + tradução
+- remoção do uso do ffprobe e ffmpeg para alg próprio
+- criação de legendas com whisper
+- modo terminal com args completo
+- compilar executavel para diversas arquiteturas
+- possibilidade de interface grafica

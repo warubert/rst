@@ -13,8 +13,9 @@ O RST usa `ffprobe` para detectar as faixas de legenda e `ffmpeg` para exportar 
 - Disponibiliza a interface em português, inglês e espanhol
 - Detecta o idioma do sistema na primeira execução e permite alterá-lo em **Opções**
 - Usa inglês quando o idioma do sistema não é português, inglês ou espanhol
+- Traduz arquivos `.srt` pelo serviço de tradução do Google, dividindo legendas grandes em várias requisições assíncronas
 
-O idioma escolhido em **Opções** é salvo nas configurações do usuário e tem prioridade sobre o idioma do sistema nas próximas execuções. As opções **Traduzir legenda** e **Extrair e traduzir** ainda não estão implementadas.
+O idioma escolhido em **Opções** é salvo nas configurações do usuário e tem prioridade sobre o idioma do sistema nas próximas execuções. A opção **Extrair e traduzir** ainda não está implementada.
 
 ## Requisitos
 
@@ -85,3 +86,47 @@ ffmpeg -i arquivo.mkv -map 0:INDICE_DA_FAIXA arquivo_saida.srt
 ```
 
 Se o nome de saída não for informado, o programa usa o nome do arquivo de vídeo com a extensão `.srt`.
+
+## Tradução
+
+Escolha **Traduzir legenda** no menu. O programa pergunta, em ordem:
+
+1. o caminho do arquivo `.srt`;
+2. o idioma original da legenda (padrão `auto`, detecção automática);
+3. o idioma de destino (padrão: o idioma configurado no programa);
+4. o nome do arquivo traduzido (padrão: `nome_original-idioma.srt`, por exemplo `AloneS13E13-pt.srt`).
+
+Os tempos e as tags de posição (como `{\an8}`) são preservados. As legendas são enviadas em lotes de até 100 textos ou 4000 caracteres, com até 4 requisições simultâneas e novas tentativas em caso de falha.
+
+A tradução usa um endpoint não oficial do Google Tradutor e exige conexão com a internet e uma chave de API.
+
+### Chave de API
+
+O endpoint rejeita requisições sem uma chave, e a chave não faz parte do código para não ser versionada. O programa a lê da variável de ambiente `GOOGLE_TRANSLATE_API_KEY`, que pode ser definida no ambiente ou em um arquivo `.env` na pasta onde o programa é executado (carregado automaticamente).
+
+1. Copie o arquivo de exemplo e preencha a chave:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   ```env
+   GOOGLE_TRANSLATE_API_KEY=sua_chave_aqui
+   ```
+
+2. O `.env` está no `.gitignore` e não deve ser commitado. O `.env.example` é versionado apenas como modelo, sem a chave real.
+
+Para obter uma chave:
+
+1. Acesse o [Google Cloud Console](https://console.cloud.google.com/) e crie ou selecione um projeto.
+2. Em **APIs e serviços**, ative a **Cloud Translation API**.
+3. Em **APIs e serviços > Credenciais**, escolha **Criar credenciais > Chave de API**.
+4. Restrinja a chave à Cloud Translation API e copie o valor para o `.env`.
+
+Sem a chave, a opção **Traduzir legenda** exibe um aviso e não pede os dados da tradução. Como o endpoint usado é não oficial, o Google pode alterar ou bloquear seu uso, e uma chave criada pelo Console pode não ser aceita por ele.
+
+O teste com o serviço real é ignorado por padrão e usa a chave do `.env`:
+
+```bash
+cargo test translates_the_sample_file_with_the_real_service -- --ignored
+```

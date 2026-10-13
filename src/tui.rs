@@ -24,6 +24,7 @@ fn require_ui<T, E>(result: Result<T, E>) -> T {
 enum MenuAction {
     Extract,
     Translate,
+    ExtractAndTranslate,
     Noop,
     Language,
     Exit,
@@ -33,6 +34,7 @@ enum MenuAction {
 pub enum MenuChoice {
     Extract,
     Translate,
+    ExtractAndTranslate,
     Exit,
 }
 
@@ -40,6 +42,7 @@ fn menu_action(selected: usize) -> MenuAction {
     match selected {
         0 => MenuAction::Extract,
         1 => MenuAction::Translate,
+        2 => MenuAction::ExtractAndTranslate,
         3 => MenuAction::Language,
         4 => MenuAction::Exit,
         _ => MenuAction::Noop,
@@ -429,6 +432,9 @@ pub fn main_menu() -> MenuChoice {
                 KeyCode::Enter => match menu_action(selected) {
                     MenuAction::Extract => break 'menu MenuChoice::Extract,
                     MenuAction::Translate => break 'menu MenuChoice::Translate,
+                    MenuAction::ExtractAndTranslate => {
+                        break 'menu MenuChoice::ExtractAndTranslate;
+                    }
                     MenuAction::Language => language_menu(&mut terminal),
                     MenuAction::Exit => break 'menu MenuChoice::Exit,
                     MenuAction::Noop => continue,
@@ -779,7 +785,7 @@ mod tests {
     fn maps_main_menu_options_to_their_actions() {
         assert_eq!(menu_action(0), MenuAction::Extract);
         assert_eq!(menu_action(1), MenuAction::Translate);
-        assert_eq!(menu_action(2), MenuAction::Noop);
+        assert_eq!(menu_action(2), MenuAction::ExtractAndTranslate);
         assert_eq!(menu_action(3), MenuAction::Language);
         assert_eq!(menu_action(4), MenuAction::Exit);
         assert_eq!(menu_action(5), MenuAction::Noop);

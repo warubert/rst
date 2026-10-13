@@ -17,6 +17,7 @@ mod tui;
 enum Action {
     Extract(String),
     Translate,
+    ExtractAndTranslate(String),
 }
 
 fn resolve_action(
@@ -29,6 +30,7 @@ fn resolve_action(
         None => match show_menu() {
             MenuChoice::Extract => prompt_path().map(Action::Extract),
             MenuChoice::Translate => Some(Action::Translate),
+            MenuChoice::ExtractAndTranslate => prompt_path().map(Action::ExtractAndTranslate),
             MenuChoice::Exit => None,
         },
     }
@@ -40,29 +42,44 @@ fn run_translation() {
     let Some(input) = tui::prompt_srt_path() else {
         return;
     };
+    run_translation_for_srt(&input, api_key, None);
+}
+
+fn run_translation_for_srt(input: &str, api_key: Option<String>, extracted_srt: Option<&str>) {
     let Some(source) = tui::prompt_source_language() else {
+        show_extraction_only(extracted_srt);
         return;
     };
     let Some(target) = tui::prompt_target_language() else {
+        show_extraction_only(extracted_srt);
         return;
     };
-    let Some(output) = tui::prompt_translation_output_name(&input, &target) else {
+    let Some(output) = tui::prompt_translation_output_name(input, &target) else {
+        show_extraction_only(extracted_srt);
         return;
     };
 
     let status = t!(
         "messages.translating",
-        input = &input,
+        input = input,
         source = &source,
         target = &target
     );
     let result = tui::with_status(&status, || {
-        translate::translate_file(&input, &output, &source, &target, api_key.as_deref())
+        translate::translate_file(input, &output, &source, &target, api_key.as_deref())
     });
 
     match result {
         Ok(()) => {
-            let mut message = t!("messages.translation_success", output = &output).to_string();
+            let mut message = match extracted_srt {
+                Some(extracted) => t!(
+                    "messages.extract_translate_success",
+                    extracted = extracted,
+                    translated = &output
+                )
+                .to_string(),
+                None => t!("messages.translation_success", output = &output).to_string(),
+            };
             if api_key.is_none() {
                 message.push_str("\n\n");
                 message.push_str(&t!(
@@ -72,21 +89,31 @@ fn run_translation() {
             }
             tui::show_message(MessageKind::Success, &message);
         }
-        Err(error) => tui::show_message(MessageKind::Error, &error),
+        Err(error) => {
+            let message = match extracted_srt {
+                Some(extracted) => t!(
+                    "messages.extracted_translation_failed",
+                    output = extracted,
+                    error = error
+                )
+                .to_string(),
+                None => error,
+            };
+            tui::show_message(MessageKind::Error, &message);
+        }
     }
 }
 
-fn main() {
-    let _ = dotenvy::dotenv();
-    localization::initialize();
+fn show_extraction_only(extracted_srt: Option<&str>) {
+    if let Some(output) = extracted_srt {
+        tui::show_message(
+            MessageKind::Info,
+            &t!("messages.extracted_translation_cancelled", output = output),
+        );
+    }
+}
 
-    let action = resolve_action(env::args().nth(1), tui::main_menu, tui::prompt_input_path);
-    let input = match action {
-        Some(Action::Extract(input)) => input,
-        Some(Action::Translate) => return run_translation(),
-        None => return,
-    };
-
+fn run_extraction(input: String, translate_after: bool) {
     let probe = ffprobe::Ffprobe;
     let subtitle_streams = match probe.get_subtitle_streams(&input) {
         Ok(streams) => streams,
@@ -117,11 +144,31 @@ fn main() {
     });
 
     match result {
+        Ok(()) if translate_after => {
+            run_translation_for_srt(
+                &output_srt_string,
+                translate::api_key(),
+                Some(&output_srt_string),
+            );
+        }
         Ok(()) => tui::show_message(
             MessageKind::Success,
             &t!("messages.success", output = &output_srt_string),
         ),
         Err(error) => tui::show_message(MessageKind::Error, &error),
+    }
+}
+
+fn main() {
+    let _ = dotenvy::dotenv();
+    localization::initialize();
+
+    let action = resolve_action(env::args().nth(1), tui::main_menu, tui::prompt_input_path);
+    match action {
+        Some(Action::Extract(input)) => run_extraction(input, false),
+        Some(Action::Translate) => run_translation(),
+        Some(Action::ExtractAndTranslate(input)) => run_extraction(input, true),
+        None => {}
     }
 }
 
@@ -167,6 +214,17 @@ mod tests {
             || Some("video.mkv".to_string()),
         );
         assert_eq!(extract_path(action).as_deref(), Some("video.mkv"));
+    }
+
+    #[test]
+    fn combined_choice_prompts_for_video_and_selects_both_operations() {
+        let action = resolve_action(
+            None,
+            || MenuChoice::ExtractAndTranslate,
+            || Some("video.mkv".to_string()),
+        );
+
+        assert!(matches!(action, Some(Action::ExtractAndTranslate(path)) if path == "video.mkv"));
     }
 
     #[test]

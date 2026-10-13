@@ -98,9 +98,18 @@ Escolha **Traduzir legenda** no menu. O programa pergunta, em ordem:
 
 Os tempos e as tags de posição (como `{\an8}`) são preservados. As legendas são enviadas em lotes de até 100 textos ou 4000 caracteres, com até 4 requisições simultâneas e novas tentativas em caso de falha.
 
-### Chave de API
+### Chave de API (opcional)
 
-O endpoint rejeita requisições sem uma chave, e a chave não faz parte do código para não ser versionada. O programa a lê da variável de ambiente `GOOGLE_TRANSLATE_API_KEY`, que pode ser definida no ambiente ou em um arquivo `.env` na pasta onde o programa é executado (carregado automaticamente).
+O programa usa dois serviços de tradução, conforme a existência de uma chave:
+
+| Situação                            | Serviço                                 | Qualidade |
+| ----------------------------------- | --------------------------------------- | --------- |
+| `GOOGLE_TRANSLATE_API_KEY` definida | `translateHtml`, com chave              | maior     |
+| chave ausente ou vazia              | `translate_a/single` (`gtx`), sem chave | menor     |
+
+Sem a chave a tradução funciona, e o programa avisa que está usando o serviço sem chave. Nos testes com o arquivo de exemplo, o resultado do serviço sem chave teve a mesma estrutura (legendas, tempos e tags), mas só cerca de 27% das legendas ficaram com o mesmo texto do serviço com chave; em vários casos a versão com chave soou mais natural.
+
+A chave não faz parte do código para não ser versionada. O programa a lê da variável de ambiente `GOOGLE_TRANSLATE_API_KEY`, que pode ser definida no ambiente ou em um arquivo `.env` na pasta onde o programa é executado (carregado automaticamente).
 
 1. Copie o arquivo de exemplo e preencha a chave:
 
@@ -121,18 +130,17 @@ Para obter uma chave:
 3. Em **APIs e serviços > Credenciais**, escolha **Criar credenciais > Chave de API**.
 4. Restrinja a chave à Cloud Translation API e copie o valor para o `.env`.
 
-Sem a chave, a opção **Traduzir legenda** exibe um aviso e não pede os dados da tradução. Como o endpoint usado é não oficial, o Google pode alterar ou bloquear seu uso, e uma chave criada pelo Console pode não ser aceita por ele.
-
-O teste com o serviço real é ignorado por padrão e usa a chave do `.env`:
+Os testes com o serviço real são ignorados por padrão. O primeiro usa a chave do `.env`; o segundo não precisa de chave:
 
 ```bash
 cargo test translates_the_sample_file_with_the_real_service -- --ignored
+cargo test translates_the_sample_file_without_an_api_key -- --ignored
 ```
 
 ### Em desenvolvimento
 
-- testar metodo de tradução sem api key
 - setar chave de api pelas opçoes
+- autocomplete de linguas
 - fluxo unico extração + tradução
 - remoção do uso do ffprobe e ffmpeg para alg próprio
 - criação de legendas com whisper

@@ -7,6 +7,7 @@ use std::{env, fs, ops::Range, time::Duration};
 
 pub const API_KEY_ENV: &str = "GOOGLE_TRANSLATE_API_KEY";
 const ENDPOINT: &str = "https://translate-pa.googleapis.com/v1/translateHtml";
+const GTX_ENDPOINT: &str = "https://translate.googleapis.com/translate_a/single";
 const MAX_BATCH_ITEMS: usize = 100;
 const MAX_BATCH_CHARS: usize = 4000;
 const MAX_CONCURRENT_REQUESTS: usize = 4;
@@ -28,15 +29,14 @@ impl GoogleTranslator {
     }
 }
 
-pub fn api_key() -> Result<String, String> {
+pub fn api_key() -> Option<String> {
     read_api_key(env::var(API_KEY_ENV).ok())
 }
 
-fn read_api_key(value: Option<String>) -> Result<String, String> {
+fn read_api_key(value: Option<String>) -> Option<String> {
     value
         .map(|key| key.trim().to_string())
         .filter(|key| !key.is_empty())
-        .ok_or_else(|| t!("errors.translate_key_missing", name = API_KEY_ENV).to_string())
 }
 
 impl Translator for GoogleTranslator {
@@ -70,12 +70,101 @@ impl Translator for GoogleTranslator {
     }
 }
 
+pub struct GtxTranslator {
+    client: reqwest::Client,
+}
+
+impl GtxTranslator {
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
+impl Translator for GtxTranslator {
+    async fn translate_batch(
+        &self,
+        texts: &[String],
+        source: &str,
+        target: &str,
+    ) -> Result<Vec<String>, String> {
+        let joined = texts
+            .iter()
+            .map(|text| unescape_html(text))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let response = self
+            .client
+            .post(GTX_ENDPOINT)
+            .query(&[
+                ("client", "gtx"),
+                ("sl", source),
+                ("tl", target),
+                ("dt", "t"),
+            ])
+            .form(&[("q", joined)])
+            .send()
+            .await
+            .map_err(|error| t!("errors.translate_request", error = error).to_string())?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(t!("errors.translate_status", status = status).to_string());
+        }
+
+        let body = response
+            .text()
+            .await
+            .map_err(|error| t!("errors.translate_request", error = error).to_string())?;
+
+        parse_gtx_response(&body, texts.len())
+    }
+}
+
+fn parse_gtx_response(body: &str, expected: usize) -> Result<Vec<String>, String> {
+    let value: Value = serde_json::from_str(body)
+        .map_err(|error| t!("errors.translate_response", error = error).to_string())?;
+
+    let segments = value
+        .get(0)
+        .and_then(Value::as_array)
+        .ok_or_else(|| t!("errors.translate_response", error = "unexpected format").to_string())?;
+
+    let mut joined = String::new();
+    for segment in segments {
+        match segment.get(0).and_then(Value::as_str) {
+            Some(text) => joined.push_str(text),
+            None => {
+                return Err(
+                    t!("errors.translate_response", error = "unexpected format").to_string()
+                );
+            }
+        }
+    }
+
+    let joined = joined.strip_suffix('\n').unwrap_or(&joined);
+    let lines: Vec<String> = joined.split('\n').map(str::to_string).collect();
+
+    if lines.len() != expected {
+        return Err(t!(
+            "errors.translate_mismatch",
+            expected = expected,
+            received = lines.len()
+        )
+        .to_string());
+    }
+
+    Ok(lines)
+}
+
 pub fn translate_file(
     input: &str,
     output: &str,
     source: &str,
     target: &str,
-    api_key: &str,
+    api_key: Option<&str>,
 ) -> Result<(), String> {
     let content = fs::read_to_string(input)
         .map_err(|error| t!("errors.srt_read", path = input, error = error).to_string())?;
@@ -85,14 +174,22 @@ pub fn translate_file(
         .enable_all()
         .build()
         .map_err(|error| t!("errors.translate_request", error = error).to_string())?;
-    let translator = GoogleTranslator::new(api_key.to_string());
-    let translated = runtime.block_on(translate_cues(
-        &translator,
-        &cues,
-        source,
-        target,
-        RETRY_DELAY,
-    ))?;
+    let translated = match api_key {
+        Some(key) => runtime.block_on(translate_cues(
+            &GoogleTranslator::new(key.to_string()),
+            &cues,
+            source,
+            target,
+            RETRY_DELAY,
+        )),
+        None => runtime.block_on(translate_cues(
+            &GtxTranslator::new(),
+            &cues,
+            source,
+            target,
+            RETRY_DELAY,
+        )),
+    }?;
 
     fs::write(output, srt::serialize(&translated))
         .map_err(|error| t!("errors.srt_write", path = output, error = error).to_string())
@@ -531,15 +628,90 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_api_key_and_rejects_missing_or_blank_values() {
+    fn reads_the_api_key_and_treats_missing_or_blank_values_as_absent() {
         assert_eq!(
-            read_api_key(Some(" abc123\n".to_string())).unwrap(),
-            "abc123"
+            read_api_key(Some(" abc123\n".to_string())).as_deref(),
+            Some("abc123")
         );
+        assert_eq!(read_api_key(None), None);
+        assert_eq!(read_api_key(Some("   ".to_string())), None);
+    }
 
-        let missing = read_api_key(None).unwrap_err();
-        assert!(missing.contains(super::API_KEY_ENV));
-        assert!(read_api_key(Some("   ".to_string())).is_err());
+    #[test]
+    fn parses_gtx_segments_into_one_line_per_input() {
+        let body = r#"[[["É realmente interessante\n","It's really interesting\n",null,null,10],["para ver quem você se torna\n","to see who you become\n"],["Eca!","Ugh!"]],null,"en"]"#;
+
+        assert_eq!(
+            super::parse_gtx_response(body, 3).unwrap(),
+            [
+                "É realmente interessante",
+                "para ver quem você se torna",
+                "Eca!"
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_gtx_responses_with_a_different_line_count() {
+        let body = r#"[[["um\ndois\n","x"]],null,"en"]"#;
+
+        assert!(super::parse_gtx_response(body, 3).is_err());
+        assert!(super::parse_gtx_response("not json", 1).is_err());
+        assert!(super::parse_gtx_response(r#"{"a":1}"#, 1).is_err());
+    }
+
+    // Requires network access and the key in the environment or .env.
+    #[test]
+    #[ignore]
+    fn compares_keyless_gtx_with_translate_html_on_the_sample_file() {
+        let _ = dotenvy::dotenv();
+        let input = concat!(env!("CARGO_MANIFEST_DIR"), "/AloneS13E13.srt");
+        let cues = crate::srt::parse(&std::fs::read_to_string(input).unwrap()).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let google = super::GoogleTranslator::new(super::api_key().unwrap());
+        let gtx = super::GtxTranslator::new();
+        let expected = runtime
+            .block_on(translate_cues(
+                &google,
+                &cues,
+                "auto",
+                "pt",
+                Duration::from_millis(500),
+            ))
+            .unwrap();
+        let started = std::time::Instant::now();
+        let actual = runtime
+            .block_on(translate_cues(
+                &gtx,
+                &cues,
+                "auto",
+                "pt",
+                Duration::from_millis(500),
+            ))
+            .unwrap();
+        println!("gtx took {:?}", started.elapsed());
+
+        assert_eq!(expected.len(), actual.len());
+        let mut identical = 0;
+        let mut differences = Vec::new();
+        for (left, right) in expected.iter().zip(&actual) {
+            assert_eq!(left.index, right.index);
+            assert_eq!(left.timing, right.timing);
+            if left.text == right.text {
+                identical += 1;
+            } else {
+                differences.push((left.index.clone(), left.text.clone(), right.text.clone()));
+            }
+        }
+
+        println!("identical: {identical}/{}", expected.len());
+        for (index, left, right) in differences.iter().take(25) {
+            println!("--- cue {index}\n translateHtml: {left:?}\n gtx:           {right:?}");
+        }
     }
 
     #[tokio::test]
@@ -557,17 +729,30 @@ mod tests {
     }
 
     // Requires network access and the key in the environment or .env:
-    // cargo test translates_the_sample_file_with_the_real_service -- --ignored
+    // cargo test translates_the_sample_file -- --ignored
     #[test]
     #[ignore]
     fn translates_the_sample_file_with_the_real_service() {
         let _ = dotenvy::dotenv();
-        let api_key = super::api_key().unwrap();
+        let api_key = super::api_key().expect("set GOOGLE_TRANSLATE_API_KEY");
+
+        assert_sample_translation(Some(&api_key));
+    }
+
+    // Requires network access only.
+    #[test]
+    #[ignore]
+    fn translates_the_sample_file_without_an_api_key() {
+        assert_sample_translation(None);
+    }
+
+    fn assert_sample_translation(api_key: Option<&str>) {
         let input = concat!(env!("CARGO_MANIFEST_DIR"), "/AloneS13E13.srt");
-        let output = std::env::temp_dir().join("AloneS13E13-pt-test.srt");
+        let output =
+            std::env::temp_dir().join(format!("AloneS13E13-pt-test-{}.srt", api_key.is_some()));
         let output = output.to_str().unwrap();
 
-        super::translate_file(input, output, "auto", "pt", &api_key).unwrap();
+        super::translate_file(input, output, "auto", "pt", api_key).unwrap();
 
         let original = crate::srt::parse(&std::fs::read_to_string(input).unwrap()).unwrap();
         let translated = crate::srt::parse(&std::fs::read_to_string(output).unwrap()).unwrap();

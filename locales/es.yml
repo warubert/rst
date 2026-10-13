@@ -22,12 +22,18 @@ tui:
   subtitles: "Subtítulos disponibles"
   subtitle_help: "Usa ↑/↓ para moverte\nEnter para confirmar\nq o Esc para salir"
   unknown_language: "idioma desconocido"
-terminal:
+messages:
+  info_title: "Aviso"
+  success_title: "Éxito"
+  error_title: "Error"
+  working_title: "Procesando"
+  continue_hint: "Pulsa Enter, Esc o q para continuar; ↑/↓ para desplazar"
   no_subtitles: "No se encontraron subtítulos en el archivo."
   command: "Ejecutando: ffmpeg -i %{input} -map 0:%{index} %{output}"
   success: "Subtítulo extraído correctamente en: %{output}"
   translating: "Traduciendo %{input} (%{source} -> %{target})..."
   translation_success: "Subtítulo traducido correctamente en: %{output}"
+  translation_without_key: "No hay clave de API (%{name}). Usando el servicio de traducción sin clave, de menor calidad."
 translate:
   srt_path_prompt: "Introduce la ruta del archivo .srt"
   srt_path_field: "Archivo .srt de origen"
@@ -51,4 +57,3 @@ errors:
   translate_status: "El servicio de traducción devolvió un error: %{status}"
   translate_response: "Respuesta de traducción no válida: %{error}"
   translate_mismatch: "El servicio devolvió %{received} textos, pero se esperaban %{expected}."
-  translate_key_missing: "Falta la clave de API. Define %{name} en el archivo .env o en el entorno (consulta el README)."

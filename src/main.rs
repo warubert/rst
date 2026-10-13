@@ -3,14 +3,14 @@ rust_i18n::i18n!("locales", fallback = "en");
 use std::env;
 
 use interfaces::{ffmpeg::SubtitleExtractor, probe::SubtitleProbe};
-use tui::MenuChoice;
+use rust_i18n::t;
+use tui::{MenuChoice, MessageKind};
 
 mod ffmpeg;
 mod ffprobe;
 mod interfaces;
 mod localization;
 mod srt;
-mod terminal;
 mod translate;
 mod tui;
 
@@ -35,13 +35,7 @@ fn resolve_action(
 }
 
 fn run_translation() {
-    let api_key = match translate::api_key() {
-        Ok(key) => key,
-        Err(error) => {
-            terminal::print_error(&error);
-            return;
-        }
-    };
+    let api_key = translate::api_key();
 
     let Some(input) = tui::prompt_srt_path() else {
         return;
@@ -56,11 +50,29 @@ fn run_translation() {
         return;
     };
 
-    terminal::print_translating(&input, &source, &target);
+    let status = t!(
+        "messages.translating",
+        input = &input,
+        source = &source,
+        target = &target
+    );
+    let result = tui::with_status(&status, || {
+        translate::translate_file(&input, &output, &source, &target, api_key.as_deref())
+    });
 
-    match translate::translate_file(&input, &output, &source, &target, &api_key) {
-        Ok(()) => terminal::print_translation_success(&output),
-        Err(error) => terminal::print_error(&error),
+    match result {
+        Ok(()) => {
+            let mut message = t!("messages.translation_success", output = &output).to_string();
+            if api_key.is_none() {
+                message.push_str("\n\n");
+                message.push_str(&t!(
+                    "messages.translation_without_key",
+                    name = translate::API_KEY_ENV
+                ));
+            }
+            tui::show_message(MessageKind::Success, &message);
+        }
+        Err(error) => tui::show_message(MessageKind::Error, &error),
     }
 }
 
@@ -79,13 +91,13 @@ fn main() {
     let subtitle_streams = match probe.get_subtitle_streams(&input) {
         Ok(streams) => streams,
         Err(error) => {
-            terminal::print_error(&error);
+            tui::show_message(MessageKind::Error, &error);
             return;
         }
     };
 
     if subtitle_streams.is_empty() {
-        terminal::print_no_subtitles_found();
+        tui::show_message(MessageKind::Info, &t!("messages.no_subtitles"));
         return;
     }
 
@@ -93,17 +105,24 @@ fn main() {
     let selected_subtitle = &subtitle_streams[selected_index];
     let output_srt_string = tui::prompt_output_name(&input);
 
-    terminal::print_ffmpeg_command(&input, selected_subtitle.index, &output_srt_string);
-
+    let status = t!(
+        "messages.command",
+        input = &input,
+        index = selected_subtitle.index,
+        output = &output_srt_string
+    );
     let extractor = ffmpeg::Ffmpeg;
-    if let Err(error) =
+    let result = tui::with_status(&status, || {
         extractor.extract_subtitle(&input, selected_subtitle.index, &output_srt_string)
-    {
-        terminal::print_error(&error);
-        return;
-    }
+    });
 
-    terminal::print_success(&output_srt_string);
+    match result {
+        Ok(()) => tui::show_message(
+            MessageKind::Success,
+            &t!("messages.success", output = &output_srt_string),
+        ),
+        Err(error) => tui::show_message(MessageKind::Error, &error),
+    }
 }
 
 #[cfg(test)]

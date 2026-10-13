@@ -10,10 +10,10 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use rust_i18n::t;
-use std::io;
+use std::{io, time::Duration};
 
 type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -236,6 +236,131 @@ fn draw_subtitle_selection(
                 .title(t!("menu.actions", locale = locale).to_string()),
         );
     frame.render_widget(help, chunks[1]);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageKind {
+    Info,
+    Success,
+    Error,
+}
+
+fn message_title(kind: MessageKind, locale: &str) -> (String, Color) {
+    match kind {
+        MessageKind::Info => (
+            t!("messages.info_title", locale = locale).to_string(),
+            Color::Yellow,
+        ),
+        MessageKind::Success => (
+            t!("messages.success_title", locale = locale).to_string(),
+            Color::Green,
+        ),
+        MessageKind::Error => (
+            t!("messages.error_title", locale = locale).to_string(),
+            Color::Red,
+        ),
+    }
+}
+
+fn draw_message(frame: &mut Frame<'_>, kind: MessageKind, body: &str, scroll: u16, locale: &str) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([Constraint::Min(5), Constraint::Length(3)])
+        .split(area);
+
+    let (title, color) = message_title(kind, locale);
+    let message = Paragraph::new(body.to_string())
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(color))
+                .title(title)
+                .title_style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        );
+    frame.render_widget(message, chunks[0]);
+
+    let hint = Paragraph::new(t!("messages.continue_hint", locale = locale).to_string())
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(t!("menu.actions", locale = locale).to_string()),
+        );
+    frame.render_widget(hint, chunks[1]);
+}
+
+fn draw_status(frame: &mut Frame<'_>, body: &str, locale: &str) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(6)
+        .constraints([Constraint::Min(5)])
+        .split(area);
+
+    let status = Paragraph::new(body.to_string())
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(t!("messages.working_title", locale = locale).to_string())
+                .title_alignment(Alignment::Center),
+        );
+    frame.render_widget(status, chunks[0]);
+}
+
+fn drain_pending_events() {
+    while event::poll(Duration::ZERO).unwrap_or(false) {
+        if event::read().is_err() {
+            break;
+        }
+    }
+}
+
+pub fn show_message(kind: MessageKind, body: &str) {
+    let mut terminal = start_terminal();
+    drain_pending_events();
+
+    let max_scroll = u16::try_from(body.lines().count().saturating_sub(1)).unwrap_or(u16::MAX);
+    let mut scroll = 0u16;
+
+    loop {
+        let locale = rust_i18n::locale();
+        require_ui(terminal.draw(|frame| {
+            draw_message(frame, kind, body, scroll, locale.as_ref());
+        }));
+
+        if let Event::Key(key) = require_ui(event::read()) {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Up => scroll = scroll.saturating_sub(1),
+                KeyCode::Down => scroll = (scroll + 1).min(max_scroll),
+                KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') => break,
+                _ => {}
+            }
+        }
+    }
+
+    restore_terminal(&mut terminal);
+}
+
+pub fn with_status<T>(body: &str, work: impl FnOnce() -> T) -> T {
+    let mut terminal = start_terminal();
+    let locale = rust_i18n::locale();
+    require_ui(terminal.draw(|frame| draw_status(frame, body, locale.as_ref())));
+
+    let result = work();
+
+    drain_pending_events();
+    restore_terminal(&mut terminal);
+    result
 }
 
 fn default_output_name(input: &str) -> String {
@@ -632,10 +757,10 @@ pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        MenuAction, default_output_name, default_translation_name, draw_language_menu,
-        draw_main_menu, draw_prompt, draw_subtitle_selection, finalize_output_name,
-        main_menu_options, menu_action, next_selection, normalize_language, previous_selection,
-        resolve_prompt_value,
+        MenuAction, MessageKind, default_output_name, default_translation_name, draw_language_menu,
+        draw_main_menu, draw_message, draw_prompt, draw_status, draw_subtitle_selection,
+        finalize_output_name, main_menu_options, menu_action, next_selection, normalize_language,
+        previous_selection, resolve_prompt_value,
     };
     use crate::interfaces::probe::Subtitle;
     use ratatui::{Terminal, backend::TestBackend};
@@ -737,6 +862,71 @@ mod tests {
         assert_eq!(next_selection(0, 5), 1);
         assert_eq!(next_selection(4, 5), 4);
         assert_eq!(next_selection(0, 0), 0);
+    }
+
+    #[test]
+    fn renders_each_message_kind_with_its_title_body_and_hint() {
+        for (kind, title) in [
+            (MessageKind::Info, "Notice"),
+            (MessageKind::Success, "Success"),
+            (MessageKind::Error, "Error"),
+        ] {
+            let backend = TestBackend::new(80, 20);
+            let mut terminal = Terminal::new(backend).unwrap();
+
+            terminal
+                .draw(|frame| draw_message(frame, kind, "Something happened", 0, "en"))
+                .unwrap();
+
+            let text = rendered_text(&terminal);
+            assert!(text.contains(title), "missing title for {kind:?}");
+            assert!(text.contains("Something happened"));
+            assert!(text.contains("to continue"));
+        }
+    }
+
+    #[test]
+    fn scrolling_a_long_message_hides_the_first_lines() {
+        let body = "first line\nsecond line\nthird line";
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| draw_message(frame, MessageKind::Error, body, 1, "en"))
+            .unwrap();
+
+        let text = rendered_text(&terminal);
+        assert!(!text.contains("first line"));
+        assert!(text.contains("second line"));
+        assert!(text.contains("third line"));
+    }
+
+    #[test]
+    fn renders_message_in_the_requested_locale() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| draw_message(frame, MessageKind::Success, "ok", 0, "pt"))
+            .unwrap();
+
+        let text = rendered_text(&terminal);
+        assert!(text.contains("Sucesso"));
+        assert!(text.contains("para continuar"));
+    }
+
+    #[test]
+    fn renders_working_status() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| draw_status(frame, "Translating episode.srt", "en"))
+            .unwrap();
+
+        let text = rendered_text(&terminal);
+        assert!(text.contains("Working"));
+        assert!(text.contains("Translating episode.srt"));
     }
 
     #[test]

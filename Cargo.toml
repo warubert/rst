@@ -9,8 +9,8 @@ dirs = "7.0.0"
 dotenvy = "0.15.7"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 ratatui = "0.30.2"
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["form", "json", "query", "rustls"] }
 rust-i18n = "4.2.4"
-serde_json = "1"
+serde_json = "1.0.154"
 sys-locale = "0.3.2"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "time"] }

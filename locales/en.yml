@@ -22,12 +22,18 @@ tui:
   subtitles: "Available subtitles"
   subtitle_help: "Use ↑/↓ to move\nEnter to confirm\nq or Esc to quit"
   unknown_language: "unknown language"
-terminal:
+messages:
+  info_title: "Notice"
+  success_title: "Success"
+  error_title: "Error"
+  working_title: "Working"
+  continue_hint: "Press Enter, Esc or q to continue; ↑/↓ to scroll"
   no_subtitles: "No subtitles found in the file."
   command: "Running: ffmpeg -i %{input} -map 0:%{index} %{output}"
   success: "Subtitle extracted successfully to: %{output}"
   translating: "Translating %{input} (%{source} -> %{target})..."
   translation_success: "Subtitle translated successfully to: %{output}"
+  translation_without_key: "No API key set (%{name}). Using the keyless translation service, which has lower quality."
 translate:
   srt_path_prompt: "Enter the .srt file path"
   srt_path_field: "Source .srt file"
@@ -51,4 +57,3 @@ errors:
   translate_status: "The translation service returned an error: %{status}"
   translate_response: "Invalid translation response: %{error}"
   translate_mismatch: "The service returned %{received} texts, but %{expected} were expected."
-  translate_key_missing: "API key missing. Set %{name} in the .env file or the environment (see the README)."

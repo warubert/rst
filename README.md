@@ -14,8 +14,9 @@ O RST usa `ffprobe` para detectar as faixas de legenda e `ffmpeg` para exportar 
 - Detecta o idioma do sistema na primeira execução e permite alterá-lo em **Opções**
 - Usa inglês quando o idioma do sistema não é português, inglês ou espanhol
 - Traduz arquivos `.srt` pelo serviço de tradução do Google, dividindo legendas grandes em várias requisições assíncronas
+- Extrai e traduz uma faixa de legenda do vídeo em um único fluxo
 
-O idioma escolhido em **Opções** é salvo nas configurações do usuário e tem prioridade sobre o idioma do sistema nas próximas execuções. A opção **Extrair e traduzir** ainda não está implementada.
+O idioma escolhido em **Opções** é salvo nas configurações do usuário e tem prioridade sobre o idioma do sistema nas próximas execuções.
 
 ## Requisitos
 
@@ -70,6 +71,8 @@ cargo run
 ```
 
 Use as setas para navegar e Enter para selecionar. Escolha **Extrair legenda** para informar o caminho do vídeo, selecionar uma faixa e definir o nome do arquivo `.srt` de saída.
+
+Escolha **Extrair e traduzir** para extrair uma faixa do vídeo e traduzi-la em seguida. O programa guarda o SRT extraído e cria também um segundo arquivo traduzido; é possível cancelar a tradução após a extração e manter o primeiro arquivo.
 
 Também é possível informar o arquivo de vídeo como argumento. Nesse caso, o menu inicial é ignorado e o programa segue diretamente para a seleção da legenda:
 
@@ -141,7 +144,6 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 
 - setar chave de api pelas opçoes
 - autocomplete de linguas
-- fluxo unico extração + tradução
 - remoção do uso do ffprobe e ffmpeg para alg próprio
 - criação de legendas com whisper
 - modo terminal com args completo

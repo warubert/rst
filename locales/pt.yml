@@ -51,6 +51,7 @@ errors:
   ffprobe_start: "Falha ao executar ffprobe: %{error}"
   ffprobe_status: "Comando ffprobe terminou com erro: %{status}\nstderr do ffprobe:\n%{stderr}"
   ffprobe_json: "Falha ao converter a saída do ffprobe em JSON: %{error}"
+  subtitle_selection_invalid: "A faixa de legenda selecionada não existe."
   tui_failure: "Falha ao preparar ou atualizar a interface do terminal"
   srt_read: "Falha ao ler %{path}: %{error}"
   srt_write: "Falha ao salvar %{path}: %{error}"

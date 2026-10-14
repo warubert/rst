@@ -33,6 +33,36 @@ pub fn api_key() -> Option<String> {
     read_api_key(env::var(API_KEY_ENV).ok())
 }
 
+pub fn source_language_code(language: &str) -> String {
+    let normalized = language.trim().replace('_', "-").to_ascii_lowercase();
+    let unknown = t!("tui.unknown_language").to_string().to_ascii_lowercase();
+    if normalized.is_empty() || normalized == "und" || normalized == unknown {
+        return "auto".to_string();
+    }
+
+    let mut parts = normalized.splitn(2, '-');
+    let base = parts.next().unwrap_or_default();
+    let language = match base {
+        "eng" => "en",
+        "por" => "pt",
+        "spa" => "es",
+        "fra" | "fre" => "fr",
+        "deu" | "ger" => "de",
+        "ita" => "it",
+        "nld" | "dut" => "nl",
+        "jpn" => "ja",
+        "kor" => "ko",
+        "rus" => "ru",
+        "zho" | "chi" => "zh",
+        _ => base,
+    };
+
+    match parts.next() {
+        Some(region) => format!("{language}-{region}"),
+        None => language.to_string(),
+    }
+}
+
 fn read_api_key(value: Option<String>) -> Option<String> {
     value
         .map(|key| key.trim().to_string())
@@ -166,6 +196,25 @@ pub fn translate_file(
     target: &str,
     api_key: Option<&str>,
 ) -> Result<(), String> {
+    match api_key {
+        Some(key) => translate_file_with(
+            input,
+            output,
+            source,
+            target,
+            &GoogleTranslator::new(key.to_string()),
+        ),
+        None => translate_file_with(input, output, source, target, &GtxTranslator::new()),
+    }
+}
+
+pub fn translate_file_with<T: Translator>(
+    input: &str,
+    output: &str,
+    source: &str,
+    target: &str,
+    translator: &T,
+) -> Result<(), String> {
     let content = fs::read_to_string(input)
         .map_err(|error| t!("errors.srt_read", path = input, error = error).to_string())?;
     let cues = srt::parse(&content)?;
@@ -174,22 +223,13 @@ pub fn translate_file(
         .enable_all()
         .build()
         .map_err(|error| t!("errors.translate_request", error = error).to_string())?;
-    let translated = match api_key {
-        Some(key) => runtime.block_on(translate_cues(
-            &GoogleTranslator::new(key.to_string()),
-            &cues,
-            source,
-            target,
-            RETRY_DELAY,
-        )),
-        None => runtime.block_on(translate_cues(
-            &GtxTranslator::new(),
-            &cues,
-            source,
-            target,
-            RETRY_DELAY,
-        )),
-    }?;
+    let translated = runtime.block_on(translate_cues(
+        translator,
+        &cues,
+        source,
+        target,
+        RETRY_DELAY,
+    ))?;
 
     fs::write(output, srt::serialize(&translated))
         .map_err(|error| t!("errors.srt_write", path = output, error = error).to_string())
@@ -401,10 +441,11 @@ fn decode_entity(entity: &str) -> Option<char> {
 mod tests {
     use super::{
         MAX_ATTEMPTS, assemble, build_request_body, chunk_ranges, escape_html, parse_response,
-        plan_cues, read_api_key, translate_cues, unescape_html,
+        plan_cues, read_api_key, source_language_code, translate_cues, unescape_html,
     };
     use crate::interfaces::translate::Translator;
     use crate::srt::Cue;
+    use rust_i18n::t;
     use std::{
         cell::{Cell, RefCell},
         time::Duration,
@@ -635,6 +676,20 @@ mod tests {
         );
         assert_eq!(read_api_key(None), None);
         assert_eq!(read_api_key(Some("   ".to_string())), None);
+    }
+
+    #[test]
+    fn maps_subtitle_language_tags_to_translation_source_codes() {
+        assert_eq!(source_language_code("en"), "en");
+        assert_eq!(source_language_code("eng"), "en");
+        assert_eq!(source_language_code("pt_BR"), "pt-br");
+        assert_eq!(source_language_code("por"), "pt");
+        assert_eq!(source_language_code("und"), "auto");
+        assert_eq!(source_language_code(""), "auto");
+        assert_eq!(
+            source_language_code(&t!("tui.unknown_language", locale = "en")),
+            "auto"
+        );
     }
 
     #[test]

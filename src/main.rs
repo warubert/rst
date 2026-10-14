@@ -13,6 +13,9 @@ mod localization;
 mod srt;
 mod translate;
 mod tui;
+mod workflow;
+
+use workflow::CombinedOutcome;
 
 enum Action {
     Extract(String),
@@ -42,21 +45,44 @@ fn run_translation() {
     let Some(input) = tui::prompt_srt_path() else {
         return;
     };
-    run_translation_for_srt(&input, api_key, None);
+
+    match translate_srt_interactive(&input, api_key.as_deref(), None) {
+        Ok(Some(output)) => {
+            tui::show_message(
+                MessageKind::Success,
+                &translation_success_message(&output, api_key.is_none()),
+            );
+        }
+        Ok(None) => {}
+        Err(error) => tui::show_message(MessageKind::Error, &error),
+    }
 }
 
-fn run_translation_for_srt(input: &str, api_key: Option<String>, extracted_srt: Option<&str>) {
-    let Some(source) = tui::prompt_source_language() else {
-        show_extraction_only(extracted_srt);
-        return;
+fn resolve_translation_source(
+    selected_source_language: Option<&str>,
+    prompt_source: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    match selected_source_language {
+        Some(language) => Some(translate::source_language_code(language)),
+        None => prompt_source(),
+    }
+}
+
+fn translate_srt_interactive(
+    input: &str,
+    api_key: Option<&str>,
+    selected_source_language: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(source) =
+        resolve_translation_source(selected_source_language, tui::prompt_source_language)
+    else {
+        return Ok(None);
     };
     let Some(target) = tui::prompt_target_language() else {
-        show_extraction_only(extracted_srt);
-        return;
+        return Ok(None);
     };
     let Some(output) = tui::prompt_translation_output_name(input, &target) else {
-        show_extraction_only(extracted_srt);
-        return;
+        return Ok(None);
     };
 
     let status = t!(
@@ -65,43 +91,40 @@ fn run_translation_for_srt(input: &str, api_key: Option<String>, extracted_srt: 
         source = &source,
         target = &target
     );
-    let result = tui::with_status(&status, || {
-        translate::translate_file(input, &output, &source, &target, api_key.as_deref())
-    });
+    tui::with_status(&status, || {
+        translate::translate_file(input, &output, &source, &target, api_key)
+    })?;
 
-    match result {
-        Ok(()) => {
-            let mut message = match extracted_srt {
-                Some(extracted) => t!(
-                    "messages.extract_translate_success",
-                    extracted = extracted,
-                    translated = &output
-                )
-                .to_string(),
-                None => t!("messages.translation_success", output = &output).to_string(),
-            };
-            if api_key.is_none() {
-                message.push_str("\n\n");
-                message.push_str(&t!(
-                    "messages.translation_without_key",
-                    name = translate::API_KEY_ENV
-                ));
-            }
-            tui::show_message(MessageKind::Success, &message);
-        }
-        Err(error) => {
-            let message = match extracted_srt {
-                Some(extracted) => t!(
-                    "messages.extracted_translation_failed",
-                    output = extracted,
-                    error = error
-                )
-                .to_string(),
-                None => error,
-            };
-            tui::show_message(MessageKind::Error, &message);
-        }
+    Ok(Some(output))
+}
+
+fn translation_success_message(output: &str, keyless: bool) -> String {
+    let mut message = t!("messages.translation_success", output = output).to_string();
+    if keyless {
+        message.push_str("\n\n");
+        message.push_str(&t!(
+            "messages.translation_without_key",
+            name = translate::API_KEY_ENV
+        ));
     }
+    message
+}
+
+fn combined_success_message(extracted: &str, translated: &str, keyless: bool) -> String {
+    let mut message = t!(
+        "messages.extract_translate_success",
+        extracted = extracted,
+        translated = translated
+    )
+    .to_string();
+    if keyless {
+        message.push_str("\n\n");
+        message.push_str(&t!(
+            "messages.translation_without_key",
+            name = translate::API_KEY_ENV
+        ));
+    }
+    message
 }
 
 fn show_extraction_only(extracted_srt: Option<&str>) {
@@ -114,6 +137,11 @@ fn show_extraction_only(extracted_srt: Option<&str>) {
 }
 
 fn run_extraction(input: String, translate_after: bool) {
+    if translate_after {
+        run_combined_extraction(input);
+        return;
+    }
+
     let probe = ffprobe::Ffprobe;
     let subtitle_streams = match probe.get_subtitle_streams(&input) {
         Ok(streams) => streams,
@@ -144,17 +172,62 @@ fn run_extraction(input: String, translate_after: bool) {
     });
 
     match result {
-        Ok(()) if translate_after => {
-            run_translation_for_srt(
-                &output_srt_string,
-                translate::api_key(),
-                Some(&output_srt_string),
-            );
-        }
         Ok(()) => tui::show_message(
             MessageKind::Success,
             &t!("messages.success", output = &output_srt_string),
         ),
+        Err(error) => tui::show_message(MessageKind::Error, &error),
+    }
+}
+
+fn run_combined_extraction(input: String) {
+    let probe = ffprobe::Ffprobe;
+    let extractor = ffmpeg::Ffmpeg;
+    let api_key = translate::api_key();
+    let outcome = workflow::extract_and_translate(
+        &input,
+        &probe,
+        |streams| Some(tui::select_subtitle(streams)),
+        |video| Some(tui::prompt_output_name(video)),
+        |video, index, output| {
+            let status = t!(
+                "messages.command",
+                input = video,
+                index = index,
+                output = output
+            );
+            tui::with_status(&status, || extractor.extract_subtitle(video, index, output))
+        },
+        |extracted, language| {
+            translate_srt_interactive(extracted, api_key.as_deref(), Some(language))
+        },
+    );
+
+    match outcome {
+        Ok(CombinedOutcome::NoSubtitles) => {
+            tui::show_message(MessageKind::Info, &t!("messages.no_subtitles"));
+        }
+        Ok(CombinedOutcome::CancelledBeforeExtraction) => {}
+        Ok(CombinedOutcome::ExtractedAndTranslated {
+            extracted,
+            translated,
+        }) => tui::show_message(
+            MessageKind::Success,
+            &combined_success_message(&extracted, &translated, api_key.is_none()),
+        ),
+        Ok(CombinedOutcome::TranslationCancelled { extracted }) => {
+            show_extraction_only(Some(&extracted));
+        }
+        Ok(CombinedOutcome::TranslationFailed { extracted, error }) => {
+            tui::show_message(
+                MessageKind::Error,
+                &t!(
+                    "messages.extracted_translation_failed",
+                    output = extracted,
+                    error = error
+                ),
+            );
+        }
         Err(error) => tui::show_message(MessageKind::Error, &error),
     }
 }
@@ -174,7 +247,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, MenuChoice, resolve_action};
+    use super::{Action, MenuChoice, resolve_action, resolve_translation_source};
     use std::cell::Cell;
 
     fn extract_path(action: Option<Action>) -> Option<String> {
@@ -225,6 +298,30 @@ mod tests {
         );
 
         assert!(matches!(action, Some(Action::ExtractAndTranslate(path)) if path == "video.mkv"));
+    }
+
+    #[test]
+    fn combined_flow_uses_selected_track_language_without_prompting() {
+        let prompt_called = Cell::new(false);
+        let source = resolve_translation_source(Some("eng"), || {
+            prompt_called.set(true);
+            Some("fr".to_string())
+        });
+
+        assert_eq!(source.as_deref(), Some("en"));
+        assert!(!prompt_called.get());
+    }
+
+    #[test]
+    fn standalone_translation_still_prompts_for_source_language() {
+        let prompt_called = Cell::new(false);
+        let source = resolve_translation_source(None, || {
+            prompt_called.set(true);
+            Some("fr".to_string())
+        });
+
+        assert_eq!(source.as_deref(), Some("fr"));
+        assert!(prompt_called.get());
     }
 
     #[test]

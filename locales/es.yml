@@ -51,6 +51,7 @@ errors:
   ffprobe_start: "Error al ejecutar ffprobe: %{error}"
   ffprobe_status: "ffprobe terminó con un error: %{status}\nstderr de ffprobe:\n%{stderr}"
   ffprobe_json: "Error al analizar la salida de ffprobe como JSON: %{error}"
+  subtitle_selection_invalid: "La pista de subtítulos seleccionada no existe."
   tui_failure: "Error al preparar o actualizar la interfaz de terminal"
   srt_read: "Error al leer %{path}: %{error}"
   srt_write: "Error al guardar %{path}: %{error}"

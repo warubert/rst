@@ -36,7 +36,7 @@ Execute a suíte automatizada com:
 cargo test
 ```
 
-Os testes cobrem o parsing das faixas de legenda, os argumentos usados na extração, o fluxo de entrada com e sem argumento, as ações do menu, a geração do nome `.srt`, a seleção e persistência do idioma e a renderização das telas Ratatui.
+Os testes cobrem o parsing das faixas de legenda, os argumentos usados na extração, o fluxo de entrada com e sem argumento, as ações do menu, a geração do nome `.srt`, a seleção e persistência do idioma, a renderização das telas Ratatui e o fluxo combinado de extração e tradução com dependências simuladas.
 
 Para verificar formatação, compilação e lint:
 
@@ -72,7 +72,7 @@ cargo run
 
 Use as setas para navegar e Enter para selecionar. Escolha **Extrair legenda** para informar o caminho do vídeo, selecionar uma faixa e definir o nome do arquivo `.srt` de saída.
 
-Escolha **Extrair e traduzir** para extrair uma faixa do vídeo e traduzi-la em seguida. O programa guarda o SRT extraído e cria também um segundo arquivo traduzido; é possível cancelar a tradução após a extração e manter o primeiro arquivo.
+Escolha **Extrair e traduzir** para extrair uma faixa do vídeo e traduzi-la em seguida. O idioma original é obtido dos metadados da faixa selecionada, então o programa pergunta apenas o idioma de destino. O SRT extraído é mantido junto com um segundo arquivo traduzido; é possível cancelar a tradução após a extração e manter o primeiro arquivo. Se os metadados não informarem o idioma, a detecção automática é usada.
 
 Também é possível informar o arquivo de vídeo como argumento. Nesse caso, o menu inicial é ignorado e o programa segue diretamente para a seleção da legenda:
 
@@ -144,8 +144,8 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 
 - setar chave de api pelas opçoes
 - autocomplete de linguas
-- remoção do uso do ffprobe e ffmpeg para alg próprio
 - criação de legendas com whisper
 - modo terminal com args completo
+- remoção do uso do ffprobe e ffmpeg para alg próprio
 - compilar executavel para diversas arquiteturas
 - possibilidade de interface grafica

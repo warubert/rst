@@ -3,9 +3,9 @@ use crate::srt::{self, Cue};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use rust_i18n::t;
 use serde_json::{Value, json};
-use std::{env, fs, ops::Range, time::Duration};
+use std::{fs, ops::Range, time::Duration};
 
-pub const API_KEY_ENV: &str = "GOOGLE_TRANSLATE_API_KEY";
+pub use crate::settings::API_KEY_ENV;
 const ENDPOINT: &str = "https://translate-pa.googleapis.com/v1/translateHtml";
 const GTX_ENDPOINT: &str = "https://translate.googleapis.com/translate_a/single";
 const MAX_BATCH_ITEMS: usize = 100;
@@ -30,7 +30,7 @@ impl GoogleTranslator {
 }
 
 pub fn api_key() -> Option<String> {
-    read_api_key(env::var(API_KEY_ENV).ok())
+    crate::settings::translation_api_key()
 }
 
 pub fn source_language_code(language: &str) -> String {
@@ -61,12 +61,6 @@ pub fn source_language_code(language: &str) -> String {
         Some(region) => format!("{language}-{region}"),
         None => language.to_string(),
     }
-}
-
-fn read_api_key(value: Option<String>) -> Option<String> {
-    value
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty())
 }
 
 impl Translator for GoogleTranslator {
@@ -441,7 +435,7 @@ fn decode_entity(entity: &str) -> Option<char> {
 mod tests {
     use super::{
         MAX_ATTEMPTS, assemble, build_request_body, chunk_ranges, escape_html, parse_response,
-        plan_cues, read_api_key, source_language_code, translate_cues, unescape_html,
+        plan_cues, source_language_code, translate_cues, unescape_html,
     };
     use crate::interfaces::translate::Translator;
     use crate::srt::Cue;
@@ -666,16 +660,6 @@ mod tests {
 
         assert_eq!(translated[0].text, "hi");
         assert_eq!(translator.calls.get(), MAX_ATTEMPTS);
-    }
-
-    #[test]
-    fn reads_the_api_key_and_treats_missing_or_blank_values_as_absent() {
-        assert_eq!(
-            read_api_key(Some(" abc123\n".to_string())).as_deref(),
-            Some("abc123")
-        );
-        assert_eq!(read_api_key(None), None);
-        assert_eq!(read_api_key(Some("   ".to_string())), None);
     }
 
     #[test]

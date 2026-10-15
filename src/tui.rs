@@ -1,4 +1,4 @@
-use crate::{interfaces::probe::Subtitle, localization};
+use crate::{interfaces::probe::Subtitle, localization, settings};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEventKind},
@@ -26,8 +26,17 @@ enum MenuAction {
     Translate,
     ExtractAndTranslate,
     Noop,
-    Language,
+    Options,
     Exit,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SettingsAction {
+    Language,
+    SetApiKey,
+    ToggleApiKey,
+    RemoveApiKey,
+    Back,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -43,10 +52,42 @@ fn menu_action(selected: usize) -> MenuAction {
         0 => MenuAction::Extract,
         1 => MenuAction::Translate,
         2 => MenuAction::ExtractAndTranslate,
-        3 => MenuAction::Language,
+        3 => MenuAction::Options,
         4 => MenuAction::Exit,
         _ => MenuAction::Noop,
     }
+}
+
+fn settings_action(selected: usize) -> SettingsAction {
+    match selected {
+        0 => SettingsAction::Language,
+        1 => SettingsAction::SetApiKey,
+        2 => SettingsAction::ToggleApiKey,
+        3 => SettingsAction::RemoveApiKey,
+        _ => SettingsAction::Back,
+    }
+}
+
+fn settings_options(locale: &str, has_key: bool, use_key: bool) -> [String; 5] {
+    [
+        t!("settings.language", locale = locale).to_string(),
+        if has_key {
+            t!("settings.api_key_set", locale = locale).to_string()
+        } else {
+            t!("settings.api_key_unset", locale = locale).to_string()
+        },
+        if use_key {
+            t!("settings.use_key_on", locale = locale).to_string()
+        } else {
+            t!("settings.use_key_off", locale = locale).to_string()
+        },
+        t!("settings.remove_api_key", locale = locale).to_string(),
+        t!("settings.back", locale = locale).to_string(),
+    ]
+}
+
+fn mask_input(value: &str) -> String {
+    "*".repeat(value.chars().count())
 }
 
 fn previous_selection(selected: usize) -> usize {
@@ -184,6 +225,53 @@ fn draw_language_menu(frame: &mut Frame<'_>, selected: usize, locale: &str) {
                 .borders(Borders::ALL)
                 .title(t!("menu.actions", locale = locale).to_string()),
         );
+    frame.render_widget(help, chunks[1]);
+}
+
+fn draw_settings_menu(
+    frame: &mut Frame<'_>,
+    selected: usize,
+    options: &[String],
+    status: Option<&str>,
+    locale: &str,
+) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([Constraint::Min(7), Constraint::Length(3)])
+        .split(area);
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .map(|option| ListItem::new(option.clone()))
+        .collect();
+    let mut state = ListState::default();
+    state.select(Some(selected));
+
+    let settings_list = List::new(items)
+        .block(
+            Block::default()
+                .title(t!("settings.title", locale = locale).to_string())
+                .borders(Borders::ALL),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightBlue)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(">> ");
+    frame.render_stateful_widget(settings_list, chunks[0], &mut state);
+
+    let hint = status
+        .map(str::to_string)
+        .unwrap_or_else(|| t!("settings.help", locale = locale).to_string());
+    let help = Paragraph::new(hint).alignment(Alignment::Center).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(t!("menu.actions", locale = locale).to_string()),
+    );
     frame.render_widget(help, chunks[1]);
 }
 
@@ -435,7 +523,7 @@ pub fn main_menu() -> MenuChoice {
                     MenuAction::ExtractAndTranslate => {
                         break 'menu MenuChoice::ExtractAndTranslate;
                     }
-                    MenuAction::Language => language_menu(&mut terminal),
+                    MenuAction::Options => settings_menu(&mut terminal),
                     MenuAction::Exit => break 'menu MenuChoice::Exit,
                     MenuAction::Noop => continue,
                 },
@@ -447,6 +535,90 @@ pub fn main_menu() -> MenuChoice {
     restore_terminal(&mut terminal);
 
     choice
+}
+
+fn settings_menu(terminal: &mut TuiTerminal) {
+    let mut selected = 0usize;
+    let mut status: Option<String> = None;
+
+    loop {
+        let locale = rust_i18n::locale();
+        let options = settings_options(
+            locale.as_ref(),
+            settings::has_configured_api_key(),
+            settings::api_key_enabled(),
+        );
+        require_ui(terminal.draw(|frame| {
+            draw_settings_menu(
+                frame,
+                selected,
+                &options,
+                status.as_deref(),
+                locale.as_ref(),
+            );
+        }));
+
+        if let Event::Key(key) = require_ui(event::read()) {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Up => selected = previous_selection(selected),
+                KeyCode::Down => selected = next_selection(selected, options.len()),
+                KeyCode::Esc => break,
+                KeyCode::Enter => match settings_action(selected) {
+                    SettingsAction::Language => {
+                        language_menu(terminal);
+                        status = None;
+                    }
+                    SettingsAction::SetApiKey => {
+                        if let Some(api_key) = prompt_api_key(terminal) {
+                            status = match settings::save_api_key(&api_key) {
+                                Ok(()) => Some(t!("settings.api_key_saved").to_string()),
+                                Err(error) => {
+                                    Some(t!("settings.save_failed", error = error).to_string())
+                                }
+                            };
+                        }
+                    }
+                    SettingsAction::ToggleApiKey => {
+                        let enabled = !settings::api_key_enabled();
+                        status = match settings::set_api_key_enabled(enabled) {
+                            Ok(()) => Some(if enabled {
+                                t!("settings.use_key_enabled").to_string()
+                            } else {
+                                t!("settings.use_key_disabled").to_string()
+                            }),
+                            Err(error) => {
+                                Some(t!("settings.save_failed", error = error).to_string())
+                            }
+                        };
+                    }
+                    SettingsAction::RemoveApiKey => {
+                        status = match settings::clear_saved_api_key() {
+                            Ok(()) => Some(t!("settings.api_key_removed").to_string()),
+                            Err(error) => {
+                                Some(t!("settings.save_failed", error = error).to_string())
+                            }
+                        };
+                    }
+                    SettingsAction::Back => break,
+                },
+                _ => {}
+            }
+        }
+    }
+}
+
+fn prompt_api_key(terminal: &mut TuiTerminal) -> Option<String> {
+    prompt_line_in_terminal(
+        terminal,
+        &t!("settings.api_key_prompt"),
+        &t!("settings.api_key_field"),
+        None,
+        true,
+    )
 }
 
 fn draw_prompt(frame: &mut Frame<'_>, title: &str, field_title: &str, display: &str) {
@@ -487,13 +659,39 @@ fn resolve_prompt_value(value: &str, default: Option<&str>) -> Option<String> {
 }
 
 fn prompt_line(title: &str, field_title: &str, default: Option<&str>) -> Option<String> {
+    prompt_line_with_mask(title, field_title, default, false)
+}
+
+fn prompt_line_with_mask(
+    title: &str,
+    field_title: &str,
+    default: Option<&str>,
+    masked: bool,
+) -> Option<String> {
     let mut terminal = start_terminal();
+    let result = prompt_line_in_terminal(&mut terminal, title, field_title, default, masked);
+    restore_terminal(&mut terminal);
+    result
+}
+
+fn prompt_line_in_terminal(
+    terminal: &mut TuiTerminal,
+    title: &str,
+    field_title: &str,
+    default: Option<&str>,
+    masked: bool,
+) -> Option<String> {
     let mut value = String::new();
 
-    let result = loop {
+    loop {
         let display = match (value.is_empty(), default) {
             (true, Some(default)) => t!("tui.output_default", name = default).to_string(),
             _ => value.clone(),
+        };
+        let display = if masked {
+            mask_input(&display)
+        } else {
+            display
         };
         require_ui(terminal.draw(|frame| draw_prompt(frame, title, field_title, &display)));
 
@@ -516,10 +714,7 @@ fn prompt_line(title: &str, field_title: &str, default: Option<&str>) -> Option<
                 _ => {}
             }
         }
-    };
-
-    restore_terminal(&mut terminal);
-    result
+    }
 }
 
 pub fn prompt_srt_path() -> Option<String> {
@@ -726,12 +921,12 @@ pub fn prompt_output_name(input: &str) -> String {
     finalize_output_name(&default_output_name, &value)
 }
 
-pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> usize {
+pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> Option<usize> {
     let mut terminal = start_terminal();
 
     let mut selected = 0usize;
 
-    loop {
+    let result = loop {
         let locale = rust_i18n::locale();
         require_ui(terminal.draw(|frame| {
             draw_subtitle_selection(frame, subtitle_streams, selected, locale.as_ref());
@@ -743,30 +938,28 @@ pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> usize {
             }
 
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => {
-                    restore_terminal(&mut terminal);
-                    std::process::exit(0);
-                }
+                KeyCode::Char('q') | KeyCode::Esc => break None,
                 KeyCode::Up => selected = previous_selection(selected),
                 KeyCode::Down => selected = next_selection(selected, subtitle_streams.len()),
-                KeyCode::Enter => break,
+                KeyCode::Enter => break Some(selected),
                 _ => {}
             }
         }
-    }
+    };
 
     restore_terminal(&mut terminal);
 
-    selected
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        MenuAction, MessageKind, default_output_name, default_translation_name, draw_language_menu,
-        draw_main_menu, draw_message, draw_prompt, draw_status, draw_subtitle_selection,
-        finalize_output_name, main_menu_options, menu_action, next_selection, normalize_language,
-        previous_selection, resolve_prompt_value,
+        MenuAction, MessageKind, SettingsAction, default_output_name, default_translation_name,
+        draw_language_menu, draw_main_menu, draw_message, draw_prompt, draw_settings_menu,
+        draw_status, draw_subtitle_selection, finalize_output_name, main_menu_options, mask_input,
+        menu_action, next_selection, normalize_language, previous_selection, resolve_prompt_value,
+        settings_action, settings_options,
     };
     use crate::interfaces::probe::Subtitle;
     use ratatui::{Terminal, backend::TestBackend};
@@ -786,7 +979,7 @@ mod tests {
         assert_eq!(menu_action(0), MenuAction::Extract);
         assert_eq!(menu_action(1), MenuAction::Translate);
         assert_eq!(menu_action(2), MenuAction::ExtractAndTranslate);
-        assert_eq!(menu_action(3), MenuAction::Language);
+        assert_eq!(menu_action(3), MenuAction::Options);
         assert_eq!(menu_action(4), MenuAction::Exit);
         assert_eq!(menu_action(5), MenuAction::Noop);
     }
@@ -841,6 +1034,47 @@ mod tests {
     }
 
     #[test]
+    fn settings_menu_exposes_api_key_actions_and_toggle_state() {
+        assert_eq!(settings_action(0), SettingsAction::Language);
+        assert_eq!(settings_action(1), SettingsAction::SetApiKey);
+        assert_eq!(settings_action(2), SettingsAction::ToggleApiKey);
+        assert_eq!(settings_action(3), SettingsAction::RemoveApiKey);
+        assert_eq!(settings_action(4), SettingsAction::Back);
+
+        let enabled = settings_options("en", true, true);
+        assert!(enabled[1].contains("***"), "{enabled:?}");
+        assert!(enabled[2].contains("On"));
+        assert!(!enabled.iter().any(|option| option.contains("real-secret")));
+
+        let disabled = settings_options("en", false, false);
+        assert!(disabled[1].contains("not set"));
+        assert!(disabled[2].contains("Off"));
+    }
+
+    #[test]
+    fn api_key_input_is_masked_without_exposing_its_value() {
+        assert_eq!(mask_input("secret-123"), "**********");
+        assert_eq!(mask_input(""), "");
+    }
+
+    #[test]
+    fn renders_settings_without_exposing_api_key() {
+        let backend = TestBackend::new(80, 22);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let options = settings_options("en", true, true);
+
+        terminal
+            .draw(|frame| draw_settings_menu(frame, 1, &options, None, "en"))
+            .unwrap();
+
+        let text = rendered_text(&terminal);
+        assert!(text.contains("Options"), "{text}");
+        assert!(text.contains("***"));
+        assert!(text.contains("Use API key: On"));
+        assert!(!text.contains("real-secret"));
+    }
+
+    #[test]
     fn normalizes_language_codes() {
         assert_eq!(normalize_language(" PT-br "), "pt-br");
         assert_eq!(normalize_language("Auto"), "auto");
@@ -859,6 +1093,22 @@ mod tests {
         assert!(text.contains("Target language"));
         assert!(text.contains("Language"));
         assert!(text.contains("pt (default)"));
+    }
+
+    #[test]
+    fn renders_api_key_input_only_as_asterisks() {
+        let secret = "example-private-key";
+        let masked = mask_input(secret);
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| draw_prompt(frame, "API key", "Google Translate", &masked))
+            .unwrap();
+
+        let text = rendered_text(&terminal);
+        assert!(text.contains(&"*".repeat(secret.len())));
+        assert!(!text.contains(secret));
     }
 
     #[test]

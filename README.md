@@ -46,13 +46,15 @@ cargo check
 cargo clippy -- -D warnings
 ```
 
-## Preferência de idioma
+## Configurações do usuário
 
-O idioma selecionado é gravado no arquivo `rst/language` dentro do diretório de configuração do usuário:
+As configurações são gravadas dentro do diretório de configuração do usuário:
 
-- Linux: `~/.config/rst/language` (ou `$XDG_CONFIG_HOME/rst/language`, se definido)
-- macOS: `~/Library/Application Support/rst/language`
-- Windows: `%APPDATA%\rst\language`
+- Linux: `~/.config/rst/` (ou `$XDG_CONFIG_HOME/rst/`, se definido)
+- macOS: `~/Library/Application Support/rst/`
+- Windows: `%APPDATA%\rst\`
+
+O idioma fica no arquivo `language`; a chave digitada em **Opções** fica em `google_translate_api_key`; e o toggle **Usar chave de API** fica em `use_api_key`. A chave é armazenada em texto simples, mas sua tela de entrada sempre mostra `***`; no Unix, o arquivo tem permissão `0600`.
 
 ## Compilar
 
@@ -74,7 +76,7 @@ Use as setas para navegar e Enter para selecionar. Escolha **Extrair legenda** p
 
 Escolha **Extrair e traduzir** para extrair uma faixa do vídeo e traduzi-la em seguida. O idioma original é obtido dos metadados da faixa selecionada, então o programa pergunta apenas o idioma de destino. O SRT extraído é mantido junto com um segundo arquivo traduzido; é possível cancelar a tradução após a extração e manter o primeiro arquivo. Se os metadados não informarem o idioma, a detecção automática é usada.
 
-Também é possível informar o arquivo de vídeo como argumento. Nesse caso, o menu inicial é ignorado e o programa segue diretamente para a seleção da legenda:
+Também é possível informar o arquivo de vídeo como argumento.
 
 ```bash
 cargo run -- "video.mkv"
@@ -103,16 +105,16 @@ Os tempos e as tags de posição (como `{\an8}`) são preservados. As legendas s
 
 ### Chave de API (opcional)
 
-O programa usa dois serviços de tradução, conforme a existência de uma chave:
+O programa usa dois serviços de tradução. Em **Opções**, **Usar chave de API** controla qual será usado. Quando ativado, a chave salva nas opções tem prioridade sobre `GOOGLE_TRANSLATE_API_KEY`; se não houver chave, o programa usa o serviço sem chave. Quando desativado, o programa sempre usa o serviço sem chave.
 
-| Situação                            | Serviço                                 | Qualidade |
-| ----------------------------------- | --------------------------------------- | --------- |
-| `GOOGLE_TRANSLATE_API_KEY` definida | `translateHtml`, com chave              | maior     |
-| chave ausente ou vazia              | `translate_a/single` (`gtx`), sem chave | menor     |
+| Situação                                 | Serviço                                 | Qualidade |
+| ---------------------------------------- | --------------------------------------- | --------- |
+| Toggle ligado e chave salva/env definida | `translateHtml`, com chave              | maior     |
+| Toggle desligado ou nenhuma chave        | `translate_a/single` (`gtx`), sem chave | menor     |
 
 Sem a chave a tradução funciona, e o programa avisa que está usando o serviço sem chave. Nos testes com o arquivo de exemplo, o resultado do serviço sem chave teve a mesma estrutura (legendas, tempos e tags), mas só cerca de 27% das legendas ficaram com o mesmo texto do serviço com chave; em vários casos a versão com chave soou mais natural.
 
-A chave não faz parte do código para não ser versionada. O programa a lê da variável de ambiente `GOOGLE_TRANSLATE_API_KEY`, que pode ser definida no ambiente ou em um arquivo `.env` na pasta onde o programa é executado (carregado automaticamente).
+Ela pode ser digitada em **Opções** ou fornecida pela variável de ambiente `GOOGLE_TRANSLATE_API_KEY` (inclusive por um arquivo `.env` na pasta onde o programa é executado). A chave salva nas opções tem prioridade sobre a variável de ambiente; desligar o toggle força o serviço sem chave.
 
 1. Copie o arquivo de exemplo e preencha a chave:
 
@@ -142,10 +144,9 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 
 ### Em desenvolvimento
 
-- setar chave de api pelas opçoes
 - autocomplete de linguas
 - criação de legendas com whisper
 - modo terminal com args completo
 - remoção do uso do ffprobe e ffmpeg para alg próprio
+- interface grafica
 - compilar executavel para diversas arquiteturas
-- possibilidade de interface grafica

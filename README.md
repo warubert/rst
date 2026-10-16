@@ -98,7 +98,7 @@ Escolha **Traduzir legenda** no menu. O programa pergunta, em ordem:
 
 1. o caminho do arquivo `.srt`;
 2. o idioma original da legenda (padrão `auto`, detecção automática);
-3. o idioma de destino (padrão: o idioma configurado no programa);
+3. o idioma de destino, em uma lista pesquisável com os 249 idiomas do catálogo Google (nomes no idioma selecionado no programa; filtre por nome ou código; padrão: o idioma configurado no programa);
 4. o nome do arquivo traduzido (padrão: `nome_original-idioma.srt`, por exemplo `AloneS13E13-pt.srt`).
 
 Os tempos e as tags de posição (como `{\an8}`) são preservados. As legendas são enviadas em lotes de até 100 textos ou 4000 caracteres, com até 4 requisições simultâneas e novas tentativas em caso de falha.
@@ -144,9 +144,10 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 
 ### Em desenvolvimento
 
-- autocomplete de linguas
 - criação de legendas com whisper
 - modo terminal com args completo
-- remoção do uso do ffprobe e ffmpeg para alg próprio
+- remoção do uso do ffprobe para alg próprio
+- remoção do uso do ffmpeg para alg próprio
 - interface grafica
+- repo ubuntu e deb
 - compilar executavel para diversas arquiteturas

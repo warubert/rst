@@ -1,6 +1,6 @@
 rust_i18n::i18n!("locales", fallback = "en");
 
-use std::env;
+use std::{cell::RefCell, env};
 
 use interfaces::{ffmpeg::SubtitleExtractor, probe::SubtitleProbe};
 use rust_i18n::t;
@@ -9,6 +9,8 @@ use tui::{MenuChoice, MessageKind};
 mod ffmpeg;
 mod ffprobe;
 mod interfaces;
+mod language_names;
+mod languages;
 mod localization;
 mod settings;
 mod srt;
@@ -71,20 +73,21 @@ fn run_action_loop(
 
 fn run_translation() {
     let api_key = translate::api_key();
+    let mut session = tui::TuiSession::new();
 
-    let Some(input) = tui::prompt_srt_path() else {
+    let Some(input) = session.prompt_srt_path() else {
         return;
     };
 
-    match translate_srt_interactive(&input, api_key.as_deref(), None) {
+    match translate_srt_interactive(&mut session, &input, api_key.as_deref(), None) {
         Ok(Some(output)) => {
-            tui::show_message(
+            session.show_message(
                 MessageKind::Success,
                 &translation_success_message(&output, api_key.is_none()),
             );
         }
         Ok(None) => {}
-        Err(error) => tui::show_message(MessageKind::Error, &error),
+        Err(error) => session.show_message(MessageKind::Error, &error),
     }
 }
 
@@ -99,19 +102,20 @@ fn resolve_translation_source(
 }
 
 fn translate_srt_interactive(
+    session: &mut tui::TuiSession,
     input: &str,
     api_key: Option<&str>,
     selected_source_language: Option<&str>,
 ) -> Result<Option<String>, String> {
-    let Some(source) =
-        resolve_translation_source(selected_source_language, tui::prompt_source_language)
-    else {
+    let Some(source) = resolve_translation_source(selected_source_language, || {
+        session.prompt_source_language()
+    }) else {
         return Ok(None);
     };
-    let Some(target) = tui::prompt_target_language() else {
+    let Some(target) = session.prompt_target_language() else {
         return Ok(None);
     };
-    let Some(output) = tui::prompt_translation_output_name(input, &target) else {
+    let Some(output) = session.prompt_translation_output_name(input, &target) else {
         return Ok(None);
     };
 
@@ -121,7 +125,7 @@ fn translate_srt_interactive(
         source = &source,
         target = &target
     );
-    tui::with_status(&status, || {
+    session.with_status(&status, || {
         translate::translate_file(input, &output, &source, &target, api_key)
     })?;
 
@@ -157,15 +161,6 @@ fn combined_success_message(extracted: &str, translated: &str, keyless: bool) ->
     message
 }
 
-fn show_extraction_only(extracted_srt: Option<&str>) {
-    if let Some(output) = extracted_srt {
-        tui::show_message(
-            MessageKind::Info,
-            &t!("messages.extracted_translation_cancelled", output = output),
-        );
-    }
-}
-
 fn run_extraction(input: String, translate_after: bool) {
     if translate_after {
         run_combined_extraction(input);
@@ -186,11 +181,12 @@ fn run_extraction(input: String, translate_after: bool) {
         return;
     }
 
-    let Some(selected_index) = tui::select_subtitle(&subtitle_streams) else {
+    let mut session = tui::TuiSession::new();
+    let Some(selected_index) = session.select_subtitle(&subtitle_streams) else {
         return;
     };
     let selected_subtitle = &subtitle_streams[selected_index];
-    let output_srt_string = tui::prompt_output_name(&input);
+    let output_srt_string = session.prompt_output_name(&input);
 
     let status = t!(
         "messages.command",
@@ -199,16 +195,16 @@ fn run_extraction(input: String, translate_after: bool) {
         output = &output_srt_string
     );
     let extractor = ffmpeg::Ffmpeg;
-    let result = tui::with_status(&status, || {
+    let result = session.with_status(&status, || {
         extractor.extract_subtitle(&input, selected_subtitle.index, &output_srt_string)
     });
 
     match result {
-        Ok(()) => tui::show_message(
+        Ok(()) => session.show_message(
             MessageKind::Success,
             &t!("messages.success", output = &output_srt_string),
         ),
-        Err(error) => tui::show_message(MessageKind::Error, &error),
+        Err(error) => session.show_message(MessageKind::Error, &error),
     }
 }
 
@@ -216,11 +212,12 @@ fn run_combined_extraction(input: String) {
     let probe = ffprobe::Ffprobe;
     let extractor = ffmpeg::Ffmpeg;
     let api_key = translate::api_key();
+    let session = RefCell::new(tui::TuiSession::new());
     let outcome = workflow::extract_and_translate(
         &input,
         &probe,
-        tui::select_subtitle,
-        |video| Some(tui::prompt_output_name(video)),
+        |streams| session.borrow_mut().select_subtitle(streams),
+        |video| Some(session.borrow_mut().prompt_output_name(video)),
         |video, index, output| {
             let status = t!(
                 "messages.command",
@@ -228,30 +225,45 @@ fn run_combined_extraction(input: String) {
                 index = index,
                 output = output
             );
-            tui::with_status(&status, || extractor.extract_subtitle(video, index, output))
+            session
+                .borrow_mut()
+                .with_status(&status, || extractor.extract_subtitle(video, index, output))
         },
         |extracted, language| {
-            translate_srt_interactive(extracted, api_key.as_deref(), Some(language))
+            translate_srt_interactive(
+                &mut session.borrow_mut(),
+                extracted,
+                api_key.as_deref(),
+                Some(language),
+            )
         },
     );
 
     match outcome {
         Ok(CombinedOutcome::NoSubtitles) => {
-            tui::show_message(MessageKind::Info, &t!("messages.no_subtitles"));
+            session
+                .borrow_mut()
+                .show_message(MessageKind::Info, &t!("messages.no_subtitles"));
         }
         Ok(CombinedOutcome::CancelledBeforeExtraction) => {}
         Ok(CombinedOutcome::ExtractedAndTranslated {
             extracted,
             translated,
-        }) => tui::show_message(
+        }) => session.borrow_mut().show_message(
             MessageKind::Success,
             &combined_success_message(&extracted, &translated, api_key.is_none()),
         ),
         Ok(CombinedOutcome::TranslationCancelled { extracted }) => {
-            show_extraction_only(Some(&extracted));
+            session.borrow_mut().show_message(
+                MessageKind::Info,
+                &t!(
+                    "messages.extracted_translation_cancelled",
+                    output = extracted
+                ),
+            );
         }
         Ok(CombinedOutcome::TranslationFailed { extracted, error }) => {
-            tui::show_message(
+            session.borrow_mut().show_message(
                 MessageKind::Error,
                 &t!(
                     "messages.extracted_translation_failed",
@@ -260,7 +272,9 @@ fn run_combined_extraction(input: String) {
                 ),
             );
         }
-        Err(error) => tui::show_message(MessageKind::Error, &error),
+        Err(error) => session
+            .borrow_mut()
+            .show_message(MessageKind::Error, &error),
     }
 }
 

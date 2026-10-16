@@ -61,6 +61,8 @@ translate:
   source_field: "Idioma original"
   target_prompt: "Idioma al que traducir (p. ej. en, pt, es)"
   target_field: "Idioma de destino"
+  target_search: "Filtrar por nombre o código"
+  target_select_help: "Escribe para filtrar; ↑/↓ para navegar; Enter selecciona; Esc vuelve"
   output_prompt: "Nombre del subtítulo traducido"
 errors:
   ffmpeg_start: "Error al ejecutar ffmpeg: %{error}"

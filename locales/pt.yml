@@ -61,6 +61,8 @@ translate:
   source_field: "Idioma original"
   target_prompt: "Idioma para traduzir (ex.: en, pt, es)"
   target_field: "Idioma de destino"
+  target_search: "Filtrar por nome ou código"
+  target_select_help: "Digite para filtrar; ↑/↓ para navegar; Enter seleciona; Esc volta"
   output_prompt: "Nome da legenda traduzida"
 errors:
   ffmpeg_start: "Falha ao executar ffmpeg: %{error}"

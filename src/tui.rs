@@ -17,6 +17,116 @@ use std::{io, time::Duration};
 
 type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
+pub struct TuiSession {
+    terminal: TuiTerminal,
+}
+
+impl TuiSession {
+    pub fn new() -> Self {
+        Self {
+            terminal: start_terminal(),
+        }
+    }
+
+    pub fn show_message(&mut self, kind: MessageKind, body: &str) {
+        drain_pending_events();
+
+        let max_scroll = u16::try_from(body.lines().count().saturating_sub(1)).unwrap_or(u16::MAX);
+        let mut scroll = 0u16;
+
+        loop {
+            let locale = rust_i18n::locale();
+            require_ui(self.terminal.draw(|frame| {
+                draw_message(frame, kind, body, scroll, locale.as_ref());
+            }));
+
+            if let Event::Key(key) = require_ui(event::read()) {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+
+                match key.code {
+                    KeyCode::Up => scroll = scroll.saturating_sub(1),
+                    KeyCode::Down => scroll = (scroll + 1).min(max_scroll),
+                    KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    pub fn with_status<T>(&mut self, body: &str, work: impl FnOnce() -> T) -> T {
+        let locale = rust_i18n::locale();
+        require_ui(
+            self.terminal
+                .draw(|frame| draw_status(frame, body, locale.as_ref())),
+        );
+        let result = work();
+        drain_pending_events();
+        result
+    }
+
+    pub fn select_subtitle(&mut self, subtitle_streams: &[Subtitle]) -> Option<usize> {
+        select_subtitle_in_terminal(&mut self.terminal, subtitle_streams)
+    }
+
+    pub fn prompt_input_path(&mut self) -> Option<String> {
+        prompt_input_path_in_terminal(&mut self.terminal)
+    }
+
+    pub fn prompt_output_name(&mut self, input: &str) -> String {
+        prompt_output_name_in_terminal(&mut self.terminal, input)
+    }
+
+    pub fn prompt_srt_path(&mut self) -> Option<String> {
+        prompt_line_in_terminal(
+            &mut self.terminal,
+            &t!("translate.srt_path_prompt"),
+            &t!("translate.srt_path_field"),
+            None,
+            false,
+        )
+    }
+
+    pub fn prompt_source_language(&mut self) -> Option<String> {
+        prompt_line_in_terminal(
+            &mut self.terminal,
+            &t!("translate.source_prompt"),
+            &t!("translate.source_field"),
+            Some("auto"),
+            false,
+        )
+        .map(|language| normalize_language(&language))
+    }
+
+    pub fn prompt_target_language(&mut self) -> Option<String> {
+        let locale = rust_i18n::locale().to_string();
+        target_language_selector(
+            &mut self.terminal,
+            crate::languages::SupportedLanguage::ALL,
+            &locale,
+        )
+    }
+
+    pub fn prompt_translation_output_name(&mut self, input: &str, target: &str) -> Option<String> {
+        let default = default_translation_name(input, target);
+        prompt_line_in_terminal(
+            &mut self.terminal,
+            &t!("translate.output_prompt"),
+            &t!("tui.output_file"),
+            Some(&default),
+            false,
+        )
+        .map(|name| finalize_output_name(&default, &name))
+    }
+}
+
+impl Drop for TuiSession {
+    fn drop(&mut self) {
+        restore_terminal(&mut self.terminal);
+    }
+}
+
 fn require_ui<T, E>(result: Result<T, E>) -> T {
     result.unwrap_or_else(|_| panic!("{}", t!("errors.tui_failure")))
 }
@@ -228,6 +338,156 @@ fn draw_language_menu(frame: &mut Frame<'_>, selected: usize, locale: &str) {
     frame.render_widget(help, chunks[1]);
 }
 
+fn matching_language_indices(
+    languages: &[crate::languages::SupportedLanguage],
+    query: &str,
+    locale: &str,
+) -> Vec<usize> {
+    let query = query.trim().to_lowercase();
+    languages
+        .iter()
+        .enumerate()
+        .filter_map(|(index, language)| {
+            (query.is_empty()
+                || language.name_for(locale).to_lowercase().contains(&query)
+                || language.code().to_lowercase().contains(&query))
+            .then_some(index)
+        })
+        .collect()
+}
+
+fn selected_target_language_index(
+    languages: &[crate::languages::SupportedLanguage],
+    default: &str,
+) -> usize {
+    languages
+        .iter()
+        .position(|language| language.code().eq_ignore_ascii_case(default))
+        .unwrap_or(0)
+}
+
+fn draw_target_language_selector(
+    frame: &mut Frame<'_>,
+    languages: &[crate::languages::SupportedLanguage],
+    query: &str,
+    selected: usize,
+    locale: &str,
+) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    let search = Paragraph::new(query.to_string())
+        .style(
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(t!("translate.target_search", locale = locale).to_string()),
+        );
+    frame.render_widget(search, chunks[0]);
+
+    let filtered = matching_language_indices(languages, query, locale);
+    let items: Vec<ListItem> = filtered
+        .iter()
+        .map(|&index| {
+            let language = &languages[index];
+            ListItem::new(format!(
+                "{} ({})",
+                language.name_for(locale),
+                language.code()
+            ))
+        })
+        .collect();
+    let mut state = ListState::default();
+    if !items.is_empty() {
+        state.select(Some(selected.min(items.len() - 1)));
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(t!("translate.target_field", locale = locale).to_string()),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightBlue)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(">> ");
+    frame.render_stateful_widget(list, chunks[1], &mut state);
+
+    let help = Paragraph::new(t!("translate.target_select_help", locale = locale).to_string())
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(t!("menu.actions", locale = locale).to_string()),
+        );
+    frame.render_widget(help, chunks[2]);
+}
+
+fn target_language_selector(
+    terminal: &mut TuiTerminal,
+    languages: &[crate::languages::SupportedLanguage],
+    locale: &str,
+) -> Option<String> {
+    let mut query = String::new();
+    let default = normalize_language(locale);
+    let mut selected = selected_target_language_index(languages, &default);
+
+    loop {
+        let filtered = matching_language_indices(languages, &query, locale);
+        if !filtered.is_empty() {
+            selected = selected.min(filtered.len() - 1);
+        } else {
+            selected = 0;
+        }
+
+        require_ui(terminal.draw(|frame| {
+            draw_target_language_selector(frame, languages, &query, selected, locale);
+        }));
+
+        if let Event::Key(key) = require_ui(event::read()) {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Char(character) if !character.is_control() => {
+                    query.push(character);
+                    selected = 0;
+                }
+                KeyCode::Backspace => {
+                    query.pop();
+                    selected = 0;
+                }
+                KeyCode::Up => selected = previous_selection(selected),
+                KeyCode::Down => selected = next_selection(selected, filtered.len()),
+                KeyCode::Enter => {
+                    break filtered
+                        .get(selected)
+                        .map(|&index| languages[index].code().to_string());
+                }
+                KeyCode::Esc => break None,
+                _ => {}
+            }
+        }
+    }
+}
+
 fn draw_settings_menu(
     frame: &mut Frame<'_>,
     selected: usize,
@@ -413,45 +673,7 @@ fn drain_pending_events() {
 }
 
 pub fn show_message(kind: MessageKind, body: &str) {
-    let mut terminal = start_terminal();
-    drain_pending_events();
-
-    let max_scroll = u16::try_from(body.lines().count().saturating_sub(1)).unwrap_or(u16::MAX);
-    let mut scroll = 0u16;
-
-    loop {
-        let locale = rust_i18n::locale();
-        require_ui(terminal.draw(|frame| {
-            draw_message(frame, kind, body, scroll, locale.as_ref());
-        }));
-
-        if let Event::Key(key) = require_ui(event::read()) {
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
-
-            match key.code {
-                KeyCode::Up => scroll = scroll.saturating_sub(1),
-                KeyCode::Down => scroll = (scroll + 1).min(max_scroll),
-                KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') => break,
-                _ => {}
-            }
-        }
-    }
-
-    restore_terminal(&mut terminal);
-}
-
-pub fn with_status<T>(body: &str, work: impl FnOnce() -> T) -> T {
-    let mut terminal = start_terminal();
-    let locale = rust_i18n::locale();
-    require_ui(terminal.draw(|frame| draw_status(frame, body, locale.as_ref())));
-
-    let result = work();
-
-    drain_pending_events();
-    restore_terminal(&mut terminal);
-    result
+    TuiSession::new().show_message(kind, body);
 }
 
 fn default_output_name(input: &str) -> String {
@@ -498,10 +720,11 @@ fn restore_terminal(terminal: &mut TuiTerminal) {
 }
 
 pub fn main_menu() -> MenuChoice {
-    let mut terminal = start_terminal();
+    let mut session = TuiSession::new();
+    let terminal = &mut session.terminal;
     let mut selected = 0usize;
 
-    let choice = 'menu: loop {
+    'menu: loop {
         let locale = rust_i18n::locale();
         let options = main_menu_options(locale.as_ref());
         require_ui(terminal.draw(|frame| {
@@ -523,18 +746,14 @@ pub fn main_menu() -> MenuChoice {
                     MenuAction::ExtractAndTranslate => {
                         break 'menu MenuChoice::ExtractAndTranslate;
                     }
-                    MenuAction::Options => settings_menu(&mut terminal),
+                    MenuAction::Options => settings_menu(terminal),
                     MenuAction::Exit => break 'menu MenuChoice::Exit,
                     MenuAction::Noop => continue,
                 },
                 _ => {}
             }
         }
-    };
-
-    restore_terminal(&mut terminal);
-
-    choice
+    }
 }
 
 fn settings_menu(terminal: &mut TuiTerminal) {
@@ -658,22 +877,6 @@ fn resolve_prompt_value(value: &str, default: Option<&str>) -> Option<String> {
     }
 }
 
-fn prompt_line(title: &str, field_title: &str, default: Option<&str>) -> Option<String> {
-    prompt_line_with_mask(title, field_title, default, false)
-}
-
-fn prompt_line_with_mask(
-    title: &str,
-    field_title: &str,
-    default: Option<&str>,
-    masked: bool,
-) -> Option<String> {
-    let mut terminal = start_terminal();
-    let result = prompt_line_in_terminal(&mut terminal, title, field_title, default, masked);
-    restore_terminal(&mut terminal);
-    result
-}
-
 fn prompt_line_in_terminal(
     terminal: &mut TuiTerminal,
     title: &str,
@@ -715,43 +918,6 @@ fn prompt_line_in_terminal(
             }
         }
     }
-}
-
-pub fn prompt_srt_path() -> Option<String> {
-    prompt_line(
-        &t!("translate.srt_path_prompt"),
-        &t!("translate.srt_path_field"),
-        None,
-    )
-}
-
-pub fn prompt_source_language() -> Option<String> {
-    prompt_line(
-        &t!("translate.source_prompt"),
-        &t!("translate.source_field"),
-        Some("auto"),
-    )
-    .map(|language| normalize_language(&language))
-}
-
-pub fn prompt_target_language() -> Option<String> {
-    let default = rust_i18n::locale().to_string();
-    prompt_line(
-        &t!("translate.target_prompt"),
-        &t!("translate.target_field"),
-        Some(&default),
-    )
-    .map(|language| normalize_language(&language))
-}
-
-pub fn prompt_translation_output_name(input: &str, target: &str) -> Option<String> {
-    let default = default_translation_name(input, target);
-    prompt_line(
-        &t!("translate.output_prompt"),
-        &t!("tui.output_file"),
-        Some(&default),
-    )
-    .map(|name| finalize_output_name(&default, &name))
 }
 
 fn normalize_language(language: &str) -> String {
@@ -797,7 +963,10 @@ fn language_menu(terminal: &mut TuiTerminal) {
 }
 
 pub fn prompt_input_path() -> Option<String> {
-    let mut terminal = start_terminal();
+    TuiSession::new().prompt_input_path()
+}
+
+fn prompt_input_path_in_terminal(terminal: &mut TuiTerminal) -> Option<String> {
     let mut value = String::new();
 
     loop {
@@ -840,7 +1009,6 @@ pub fn prompt_input_path() -> Option<String> {
                     value.pop();
                 }
                 KeyCode::Esc => {
-                    restore_terminal(&mut terminal);
                     return None;
                 }
                 KeyCode::Enter if !value.trim().is_empty() => break,
@@ -849,16 +1017,11 @@ pub fn prompt_input_path() -> Option<String> {
         }
     }
 
-    restore_terminal(&mut terminal);
-
     Some(value.trim().to_string())
 }
 
-pub fn prompt_output_name(input: &str) -> String {
+fn prompt_output_name_in_terminal(terminal: &mut TuiTerminal, input: &str) -> String {
     let default_output_name = default_output_name(input);
-
-    let mut terminal = start_terminal();
-
     let mut value = String::new();
 
     loop {
@@ -916,17 +1079,16 @@ pub fn prompt_output_name(input: &str) -> String {
         }
     }
 
-    restore_terminal(&mut terminal);
-
     finalize_output_name(&default_output_name, &value)
 }
 
-pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> Option<usize> {
-    let mut terminal = start_terminal();
-
+fn select_subtitle_in_terminal(
+    terminal: &mut TuiTerminal,
+    subtitle_streams: &[Subtitle],
+) -> Option<usize> {
     let mut selected = 0usize;
 
-    let result = loop {
+    loop {
         let locale = rust_i18n::locale();
         require_ui(terminal.draw(|frame| {
             draw_subtitle_selection(frame, subtitle_streams, selected, locale.as_ref());
@@ -945,11 +1107,7 @@ pub fn select_subtitle(subtitle_streams: &[Subtitle]) -> Option<usize> {
                 _ => {}
             }
         }
-    };
-
-    restore_terminal(&mut terminal);
-
-    result
+    }
 }
 
 #[cfg(test)]
@@ -957,11 +1115,12 @@ mod tests {
     use super::{
         MenuAction, MessageKind, SettingsAction, default_output_name, default_translation_name,
         draw_language_menu, draw_main_menu, draw_message, draw_prompt, draw_settings_menu,
-        draw_status, draw_subtitle_selection, finalize_output_name, main_menu_options, mask_input,
-        menu_action, next_selection, normalize_language, previous_selection, resolve_prompt_value,
-        settings_action, settings_options,
+        draw_status, draw_subtitle_selection, draw_target_language_selector, finalize_output_name,
+        main_menu_options, mask_input, matching_language_indices, menu_action, next_selection,
+        normalize_language, previous_selection, resolve_prompt_value,
+        selected_target_language_index, settings_action, settings_options,
     };
-    use crate::interfaces::probe::Subtitle;
+    use crate::{interfaces::probe::Subtitle, languages::SupportedLanguage};
     use ratatui::{Terminal, backend::TestBackend};
 
     fn rendered_text(terminal: &Terminal<TestBackend>) -> String {
@@ -1093,6 +1252,52 @@ mod tests {
         assert!(text.contains("Target language"));
         assert!(text.contains("Language"));
         assert!(text.contains("pt (default)"));
+    }
+
+    #[test]
+    fn filters_target_languages_by_localized_name_or_code() {
+        let languages = [
+            SupportedLanguage::LangEn,
+            SupportedLanguage::LangPt,
+            SupportedLanguage::LangPtPt,
+        ];
+
+        assert_eq!(
+            matching_language_indices(&languages, "portuguese", "en"),
+            [1, 2]
+        );
+        assert_eq!(
+            matching_language_indices(&languages, "português", "pt"),
+            [1, 2]
+        );
+        assert_eq!(matching_language_indices(&languages, "inglés", "es"), [0]);
+        assert_eq!(matching_language_indices(&languages, "PT-p", "en"), [2]);
+        assert_eq!(matching_language_indices(&languages, "", "en"), [0, 1, 2]);
+        assert!(matching_language_indices(&languages, "no-match", "en").is_empty());
+    }
+
+    #[test]
+    fn preselects_the_current_interface_locale_when_available() {
+        let languages = [SupportedLanguage::LangEn, SupportedLanguage::LangPtPt];
+
+        assert_eq!(selected_target_language_index(&languages, "pt-PT"), 1);
+        assert_eq!(selected_target_language_index(&languages, "es"), 0);
+    }
+
+    #[test]
+    fn renders_target_language_search_and_matching_choices() {
+        let languages = [SupportedLanguage::LangEn, SupportedLanguage::LangPt];
+        let backend = TestBackend::new(80, 18);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| draw_target_language_selector(frame, &languages, "port", 0, "pt"))
+            .unwrap();
+
+        let text = rendered_text(&terminal);
+        assert!(text.contains("Filtrar por nome ou código"));
+        assert!(text.contains("Português (Brasil) (pt)"));
+        assert!(!text.contains("Inglês (en)"));
     }
 
     #[test]

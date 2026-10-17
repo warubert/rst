@@ -1,4 +1,7 @@
 /target
 *.mkv
+*.mp4
+*.avi
+*.mov
 *.srt
 .env

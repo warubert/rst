@@ -10,7 +10,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph, Wrap},
 };
 use rust_i18n::t;
 use std::{io, time::Duration};
@@ -66,6 +66,13 @@ impl TuiSession {
         result
     }
 
+    pub fn show_progress(&mut self, body: &str, percent: u8) {
+        let locale = rust_i18n::locale();
+        require_ui(self.terminal.draw(|frame| {
+            draw_progress(frame, body, percent, locale.as_ref());
+        }));
+    }
+
     pub fn select_subtitle(&mut self, subtitle_streams: &[Subtitle]) -> Option<usize> {
         select_subtitle_in_terminal(&mut self.terminal, subtitle_streams)
     }
@@ -108,6 +115,19 @@ impl TuiSession {
         )
     }
 
+    pub fn prompt_whisper_language(
+        &mut self,
+        languages: &[crate::languages::SupportedLanguage],
+    ) -> Option<String> {
+        let locale = rust_i18n::locale().to_string();
+        let labels = LanguageSelectorLabels {
+            search: &t!("whisper.language_search"),
+            field: &t!("whisper.language_field"),
+            help: &t!("whisper.language_help"),
+        };
+        language_selector(&mut self.terminal, languages, &locale, &labels)
+    }
+
     pub fn prompt_translation_output_name(&mut self, input: &str, target: &str) -> Option<String> {
         let default = default_translation_name(input, target);
         prompt_line_in_terminal(
@@ -135,6 +155,8 @@ enum MenuAction {
     Extract,
     Translate,
     ExtractAndTranslate,
+    Transcribe,
+    TranscribeAndTranslate,
     Noop,
     Options,
     Exit,
@@ -154,6 +176,8 @@ pub enum MenuChoice {
     Extract,
     Translate,
     ExtractAndTranslate,
+    Transcribe,
+    TranscribeAndTranslate,
     Exit,
 }
 
@@ -162,8 +186,10 @@ fn menu_action(selected: usize) -> MenuAction {
         0 => MenuAction::Extract,
         1 => MenuAction::Translate,
         2 => MenuAction::ExtractAndTranslate,
-        3 => MenuAction::Options,
-        4 => MenuAction::Exit,
+        3 => MenuAction::Transcribe,
+        4 => MenuAction::TranscribeAndTranslate,
+        5 => MenuAction::Options,
+        6 => MenuAction::Exit,
         _ => MenuAction::Noop,
     }
 }
@@ -208,11 +234,13 @@ fn next_selection(selected: usize, item_count: usize) -> usize {
     (selected + 1).min(item_count.saturating_sub(1))
 }
 
-fn main_menu_options(locale: &str) -> [String; 5] {
+fn main_menu_options(locale: &str) -> [String; 7] {
     [
         t!("menu.extract", locale = locale).to_string(),
         t!("menu.translate", locale = locale).to_string(),
         t!("menu.extract_translate", locale = locale).to_string(),
+        t!("menu.transcribe", locale = locale).to_string(),
+        t!("menu.transcribe_translate", locale = locale).to_string(),
         t!("menu.options", locale = locale).to_string(),
         t!("menu.exit", locale = locale).to_string(),
     ]
@@ -366,12 +394,19 @@ fn selected_target_language_index(
         .unwrap_or(0)
 }
 
-fn draw_target_language_selector(
+struct LanguageSelectorLabels<'a> {
+    search: &'a str,
+    field: &'a str,
+    help: &'a str,
+}
+
+fn draw_language_selector(
     frame: &mut Frame<'_>,
     languages: &[crate::languages::SupportedLanguage],
     query: &str,
     selected: usize,
     locale: &str,
+    labels: &LanguageSelectorLabels<'_>,
 ) {
     let area = frame.area();
     let chunks = Layout::default()
@@ -393,7 +428,7 @@ fn draw_target_language_selector(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(t!("translate.target_search", locale = locale).to_string()),
+                .title(labels.search.to_string()),
         );
     frame.render_widget(search, chunks[0]);
 
@@ -418,7 +453,7 @@ fn draw_target_language_selector(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(t!("translate.target_field", locale = locale).to_string()),
+                .title(labels.field.to_string()),
         )
         .highlight_style(
             Style::default()
@@ -429,7 +464,7 @@ fn draw_target_language_selector(
         .highlight_symbol(">> ");
     frame.render_stateful_widget(list, chunks[1], &mut state);
 
-    let help = Paragraph::new(t!("translate.target_select_help", locale = locale).to_string())
+    let help = Paragraph::new(labels.help.to_string())
         .alignment(Alignment::Center)
         .block(
             Block::default()
@@ -444,6 +479,20 @@ fn target_language_selector(
     languages: &[crate::languages::SupportedLanguage],
     locale: &str,
 ) -> Option<String> {
+    let labels = LanguageSelectorLabels {
+        search: &t!("translate.target_search", locale = locale),
+        field: &t!("translate.target_field", locale = locale),
+        help: &t!("translate.target_select_help", locale = locale),
+    };
+    language_selector(terminal, languages, locale, &labels)
+}
+
+fn language_selector(
+    terminal: &mut TuiTerminal,
+    languages: &[crate::languages::SupportedLanguage],
+    locale: &str,
+    labels: &LanguageSelectorLabels<'_>,
+) -> Option<String> {
     let mut query = String::new();
     let default = normalize_language(locale);
     let mut selected = selected_target_language_index(languages, &default);
@@ -457,7 +506,7 @@ fn target_language_selector(
         }
 
         require_ui(terminal.draw(|frame| {
-            draw_target_language_selector(frame, languages, &query, selected, locale);
+            draw_language_selector(frame, languages, &query, selected, locale, labels);
         }));
 
         if let Event::Key(key) = require_ui(event::read()) {
@@ -664,6 +713,33 @@ fn draw_status(frame: &mut Frame<'_>, body: &str, locale: &str) {
     frame.render_widget(status, chunks[0]);
 }
 
+fn draw_progress(frame: &mut Frame<'_>, body: &str, percent: u8, locale: &str) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(6)
+        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .split(area);
+    let status = Paragraph::new(body.to_string())
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(t!("messages.working_title", locale = locale).to_string())
+                .title_alignment(Alignment::Center),
+        );
+    frame.render_widget(status, chunks[0]);
+
+    let percent = percent.min(100);
+    let gauge = Gauge::default()
+        .block(Block::default().borders(Borders::ALL))
+        .gauge_style(Style::default().fg(Color::LightGreen))
+        .ratio(f64::from(percent) / 100.0)
+        .label(format!("{percent}%"));
+    frame.render_widget(gauge, chunks[1]);
+}
+
 fn drain_pending_events() {
     while event::poll(Duration::ZERO).unwrap_or(false) {
         if event::read().is_err() {
@@ -745,6 +821,10 @@ pub fn main_menu() -> MenuChoice {
                     MenuAction::Translate => break 'menu MenuChoice::Translate,
                     MenuAction::ExtractAndTranslate => {
                         break 'menu MenuChoice::ExtractAndTranslate;
+                    }
+                    MenuAction::Transcribe => break 'menu MenuChoice::Transcribe,
+                    MenuAction::TranscribeAndTranslate => {
+                        break 'menu MenuChoice::TranscribeAndTranslate;
                     }
                     MenuAction::Options => settings_menu(terminal),
                     MenuAction::Exit => break 'menu MenuChoice::Exit,
@@ -1113,12 +1193,13 @@ fn select_subtitle_in_terminal(
 #[cfg(test)]
 mod tests {
     use super::{
-        MenuAction, MessageKind, SettingsAction, default_output_name, default_translation_name,
-        draw_language_menu, draw_main_menu, draw_message, draw_prompt, draw_settings_menu,
-        draw_status, draw_subtitle_selection, draw_target_language_selector, finalize_output_name,
-        main_menu_options, mask_input, matching_language_indices, menu_action, next_selection,
-        normalize_language, previous_selection, resolve_prompt_value,
-        selected_target_language_index, settings_action, settings_options,
+        LanguageSelectorLabels, MenuAction, MessageKind, SettingsAction, default_output_name,
+        default_translation_name, draw_language_menu, draw_language_selector, draw_main_menu,
+        draw_message, draw_progress, draw_prompt, draw_settings_menu, draw_status,
+        draw_subtitle_selection, finalize_output_name, main_menu_options, mask_input,
+        matching_language_indices, menu_action, next_selection, normalize_language,
+        previous_selection, resolve_prompt_value, selected_target_language_index, settings_action,
+        settings_options,
     };
     use crate::{interfaces::probe::Subtitle, languages::SupportedLanguage};
     use ratatui::{Terminal, backend::TestBackend};
@@ -1138,9 +1219,11 @@ mod tests {
         assert_eq!(menu_action(0), MenuAction::Extract);
         assert_eq!(menu_action(1), MenuAction::Translate);
         assert_eq!(menu_action(2), MenuAction::ExtractAndTranslate);
-        assert_eq!(menu_action(3), MenuAction::Options);
-        assert_eq!(menu_action(4), MenuAction::Exit);
-        assert_eq!(menu_action(5), MenuAction::Noop);
+        assert_eq!(menu_action(3), MenuAction::Transcribe);
+        assert_eq!(menu_action(4), MenuAction::TranscribeAndTranslate);
+        assert_eq!(menu_action(5), MenuAction::Options);
+        assert_eq!(menu_action(6), MenuAction::Exit);
+        assert_eq!(menu_action(7), MenuAction::Noop);
     }
 
     #[test]
@@ -1291,7 +1374,20 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal
-            .draw(|frame| draw_target_language_selector(frame, &languages, "port", 0, "pt"))
+            .draw(|frame| {
+                draw_language_selector(
+                    frame,
+                    &languages,
+                    "port",
+                    0,
+                    "pt",
+                    &LanguageSelectorLabels {
+                        search: "Filtrar por nome ou código",
+                        field: "Idioma de destino",
+                        help: "Digite para filtrar",
+                    },
+                )
+            })
             .unwrap();
 
         let text = rendered_text(&terminal);
@@ -1391,6 +1487,20 @@ mod tests {
     }
 
     #[test]
+    fn renders_percentage_progress() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| draw_progress(frame, "Transcribing video.mkv", 42, "en"))
+            .unwrap();
+
+        let text = rendered_text(&terminal);
+        assert!(text.contains("Transcribing video.mkv"));
+        assert!(text.contains("42%"));
+    }
+
+    #[test]
     fn renders_main_menu_in_requested_locale() {
         let backend = TestBackend::new(100, 32);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1403,7 +1513,9 @@ mod tests {
         let text = rendered_text(&terminal);
         assert!(text.contains("Main menu"));
         assert!(text.contains("1) Extract subtitles"));
-        assert!(text.contains("5) Exit"));
+        assert!(text.contains("4) Create subtitles with Whisper"));
+        assert!(text.contains("5) Create subtitles with Whisper and translate"));
+        assert!(text.contains("7) Exit"));
     }
 
     #[test]

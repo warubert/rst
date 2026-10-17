@@ -15,6 +15,8 @@ O RST usa `ffprobe` para detectar as faixas de legenda e `ffmpeg` para exportar 
 - Usa inglês quando o idioma do sistema não é português, inglês ou espanhol
 - Traduz arquivos `.srt` pelo serviço de tradução do Google, dividindo legendas grandes em várias requisições assíncronas
 - Extrai e traduz uma faixa de legenda do vídeo em um único fluxo
+- Cria legendas `.srt` com Whisper a partir do áudio do vídeo
+- Cria legendas com Whisper e traduz o resultado em um único fluxo
 
 O idioma escolhido em **Opções** é salvo nas configurações do usuário e tem prioridade sobre o idioma do sistema nas próximas execuções.
 
@@ -28,6 +30,8 @@ O idioma escolhido em **Opções** é salvo nas configurações do usuário e te
 
 Também é necessário ter o Rust e o Cargo instalados para compilar o projeto.
 
+Para criar legendas com Whisper, instale o [OpenAI Whisper](https://github.com/openai/whisper) e deixe o comando `whisper` disponível no `PATH` (por exemplo, `pip install -U openai-whisper`). Essa opção fica indisponível se o comando não puder ser executado. O FFmpeg também é necessário para o Whisper ler o áudio.
+
 ## Testes
 
 Execute a suíte automatizada com:
@@ -36,7 +40,7 @@ Execute a suíte automatizada com:
 cargo test
 ```
 
-Os testes cobrem o parsing das faixas de legenda, os argumentos usados na extração, o fluxo de entrada com e sem argumento, as ações do menu, a geração do nome `.srt`, a seleção e persistência do idioma, a renderização das telas Ratatui e o fluxo combinado de extração e tradução com dependências simuladas.
+Os testes cobrem o parsing das faixas de legenda, os argumentos usados na extração e transcrição, o progresso do Whisper, o fluxo de entrada com e sem argumento, as ações do menu, a geração do nome `.srt`, a seleção e persistência do idioma, a renderização das telas Ratatui e o fluxo combinado de extração e tradução com dependências simuladas.
 
 Para verificar formatação, compilação e lint:
 
@@ -75,6 +79,10 @@ cargo run
 Use as setas para navegar e Enter para selecionar. Escolha **Extrair legenda** para informar o caminho do vídeo, selecionar uma faixa e definir o nome do arquivo `.srt` de saída.
 
 Escolha **Extrair e traduzir** para extrair uma faixa do vídeo e traduzi-la em seguida. O idioma original é obtido dos metadados da faixa selecionada, então o programa pergunta apenas o idioma de destino. O SRT extraído é mantido junto com um segundo arquivo traduzido; é possível cancelar a tradução após a extração e manter o primeiro arquivo. Se os metadados não informarem o idioma, a detecção automática é usada.
+
+Escolha **Criar legendas com Whisper** para informar o caminho do vídeo, selecionar o idioma falado no autocomplete e definir o nome do `.srt` de saída. O nome sugerido por padrão mantém o nome-base do vídeo; o arquivo pode ser alterado ou receber outro caminho. O programa mostra o percentual informado pelo Whisper.
+
+Escolha **Criar legendas com Whisper e traduzir** para gerar o SRT no idioma falado e traduzi-lo em seguida. O idioma selecionado no Whisper é usado como origem da tradução; o SRT original é preservado mesmo que a tradução seja cancelada ou falhe.
 
 Também é possível informar o arquivo de vídeo como argumento.
 
@@ -144,7 +152,6 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 
 ### Em desenvolvimento
 
-- criação de legendas com whisper
 - modo terminal com args completo
 - remoção do uso do ffprobe para alg próprio
 - remoção do uso do ffmpeg para alg próprio

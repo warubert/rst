@@ -1,8 +1,12 @@
 rust_i18n::i18n!("locales", fallback = "en");
 
-use std::{cell::RefCell, env};
+use std::{cell::RefCell, env, path::PathBuf};
 
-use interfaces::{ffmpeg::SubtitleExtractor, probe::SubtitleProbe};
+use interfaces::{
+    ffmpeg::SubtitleExtractor,
+    probe::SubtitleProbe,
+    whisper::{SubtitleTranscriber, TranscriptionEvent},
+};
 use rust_i18n::t;
 use tui::{MenuChoice, MessageKind};
 
@@ -16,6 +20,7 @@ mod settings;
 mod srt;
 mod translate;
 mod tui;
+mod whisper;
 mod workflow;
 
 use workflow::CombinedOutcome;
@@ -24,6 +29,8 @@ enum Action {
     Extract(String),
     Translate,
     ExtractAndTranslate(String),
+    Transcribe,
+    TranscribeAndTranslate,
     Cancelled,
 }
 
@@ -46,6 +53,8 @@ fn resolve_action(
                     .map(Action::ExtractAndTranslate)
                     .unwrap_or(Action::Cancelled),
             ),
+            MenuChoice::Transcribe => Some(Action::Transcribe),
+            MenuChoice::TranscribeAndTranslate => Some(Action::TranscribeAndTranslate),
             MenuChoice::Exit => None,
         },
     }
@@ -89,6 +98,140 @@ fn run_translation() {
         Ok(None) => {}
         Err(error) => session.show_message(MessageKind::Error, &error),
     }
+}
+
+fn prompt_transcription_inputs(
+    session: &mut tui::TuiSession,
+    transcriber: &impl SubtitleTranscriber,
+) -> Option<(String, String, String)> {
+    let languages = match session.with_status(&t!("whisper.checking"), || {
+        transcriber.supported_languages()
+    }) {
+        Ok(languages) => languages,
+        Err(error) => {
+            session.show_message(MessageKind::Info, &t!("whisper.unavailable", error = error));
+            return None;
+        }
+    };
+
+    let input = session.prompt_input_path()?;
+    let language = session.prompt_whisper_language(&languages)?;
+    let output = session.prompt_output_name(&input);
+
+    Some((input, language, output))
+}
+
+fn transcribe_with_progress(
+    session: &mut tui::TuiSession,
+    transcriber: &impl SubtitleTranscriber,
+    input: &str,
+    language: &str,
+    output: &str,
+) -> Result<PathBuf, String> {
+    session.show_progress(
+        &t!("whisper.progress", input = input, language = language),
+        0,
+    );
+    transcriber.transcribe(input, language, output, &mut |event| match event {
+        TranscriptionEvent::Progress(percent) => session.show_progress(
+            &t!("whisper.progress", input = input, language = language),
+            percent,
+        ),
+        TranscriptionEvent::CpuFallback => session.show_progress(
+            &t!("whisper.cpu_fallback", input = input, language = language),
+            0,
+        ),
+    })
+}
+
+fn run_transcription() {
+    let mut session = tui::TuiSession::new();
+    let transcriber = whisper::Whisper;
+    let Some((input, language, output)) = prompt_transcription_inputs(&mut session, &transcriber)
+    else {
+        return;
+    };
+
+    let result = transcribe_with_progress(&mut session, &transcriber, &input, &language, &output);
+
+    match result {
+        Ok(output) => {
+            session.show_progress(
+                &t!("whisper.progress", input = &input, language = &language),
+                100,
+            );
+            session.show_message(
+                MessageKind::Success,
+                &t!("whisper.success", output = output.display()),
+            );
+        }
+        Err(error) => session.show_message(MessageKind::Error, &error),
+    }
+}
+
+fn run_whisper_and_translate() {
+    let mut session = tui::TuiSession::new();
+    let transcriber = whisper::Whisper;
+    let api_key = translate::api_key();
+    let Some((input, language, output)) = prompt_transcription_inputs(&mut session, &transcriber)
+    else {
+        return;
+    };
+
+    let transcribed =
+        match transcribe_with_progress(&mut session, &transcriber, &input, &language, &output) {
+            Ok(output) => output,
+            Err(error) => {
+                session.show_message(MessageKind::Error, &error);
+                return;
+            }
+        };
+    let transcribed = transcribed.to_string_lossy().into_owned();
+
+    match translate_srt_interactive(
+        &mut session,
+        &transcribed,
+        api_key.as_deref(),
+        Some(&language),
+    ) {
+        Ok(Some(translated)) => session.show_message(
+            MessageKind::Success,
+            &whisper_translation_success_message(&transcribed, &translated, api_key.is_none()),
+        ),
+        Ok(None) => session.show_message(
+            MessageKind::Info,
+            &t!("whisper.translation_cancelled", output = transcribed),
+        ),
+        Err(error) => session.show_message(
+            MessageKind::Error,
+            &t!(
+                "whisper.translation_failed",
+                output = transcribed,
+                error = error
+            ),
+        ),
+    }
+}
+
+fn whisper_translation_success_message(
+    transcribed: &str,
+    translated: &str,
+    keyless: bool,
+) -> String {
+    let mut message = t!(
+        "whisper.translation_success",
+        transcribed = transcribed,
+        translated = translated
+    )
+    .to_string();
+    if keyless {
+        message.push_str("\n\n");
+        message.push_str(&t!(
+            "messages.translation_without_key",
+            name = translate::API_KEY_ENV
+        ));
+    }
+    message
 }
 
 fn resolve_translation_source(
@@ -290,6 +433,8 @@ fn main() {
             Action::Extract(input) => run_extraction(input, false),
             Action::Translate => run_translation(),
             Action::ExtractAndTranslate(input) => run_extraction(input, true),
+            Action::Transcribe => run_transcription(),
+            Action::TranscribeAndTranslate => run_whisper_and_translate(),
             Action::Cancelled => {}
         },
     );
@@ -399,6 +544,38 @@ mod tests {
     }
 
     #[test]
+    fn transcribe_choice_starts_the_whisper_flow_without_shared_path_prompt() {
+        let prompt_called = Cell::new(false);
+        let action = resolve_action(
+            None,
+            || MenuChoice::Transcribe,
+            || {
+                prompt_called.set(true);
+                Some("video.mkv".to_string())
+            },
+        );
+
+        assert!(matches!(action, Some(Action::Transcribe)));
+        assert!(!prompt_called.get());
+    }
+
+    #[test]
+    fn whisper_and_translate_choice_starts_combined_flow_without_shared_path_prompt() {
+        let prompt_called = Cell::new(false);
+        let action = resolve_action(
+            None,
+            || MenuChoice::TranscribeAndTranslate,
+            || {
+                prompt_called.set(true);
+                Some("video.mkv".to_string())
+            },
+        );
+
+        assert!(matches!(action, Some(Action::TranscribeAndTranslate)));
+        assert!(!prompt_called.get());
+    }
+
+    #[test]
     fn leaving_menu_does_not_prompt_for_a_path() {
         let prompt_called = Cell::new(false);
         let action = resolve_action(
@@ -434,6 +611,10 @@ mod tests {
                 Action::ExtractAndTranslate(path) => {
                     actions.borrow_mut().push(format!("combined:{path}"));
                 }
+                Action::Transcribe => actions.borrow_mut().push("transcribe".to_string()),
+                Action::TranscribeAndTranslate => actions
+                    .borrow_mut()
+                    .push("transcribe-and-translate".to_string()),
                 Action::Cancelled => actions.borrow_mut().push("cancelled".to_string()),
             },
         );

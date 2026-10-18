@@ -84,11 +84,17 @@ Escolha **Criar legendas com Whisper** para informar o caminho do vídeo, seleci
 
 Escolha **Criar legendas com Whisper e traduzir** para gerar o SRT no idioma falado e traduzi-lo em seguida. O idioma selecionado no Whisper é usado como origem da tradução; o SRT original é preservado mesmo que a tradução seja cancelada ou falhe.
 
-Também é possível informar o arquivo de vídeo como argumento.
+Sem argumentos, o programa abre o menu interativo. Para executar uma ação sem abrir a interface, use `--action` e informe os parâmetros exigidos por ela. Para extração pelo CLI, indique o código do idioma da faixa, como `pt` ou `en`; uma variante regional como `pt-BR` também corresponde a `pt`.
 
 ```bash
-cargo run -- "video.mkv"
+cargo run -- --action extract --input "video.mkv" --subtitle-language pt --output "video.srt"
+cargo run -- --action translate --input "video.srt" --source-language en --target-language pt --output "video-pt.srt"
+cargo run -- --action extract-and-translate --input "video.mkv" --subtitle-language en --target-language pt --output "video.srt" --translated-output "video-pt.srt"
+cargo run -- --action transcribe --input "video.mkv" --language en --output "video.srt"
+cargo run -- --action transcribe-and-translate --input "video.mkv" --language en --target-language pt --output "video.srt" --translated-output "video-pt.srt"
 ```
+
+As ações aceitas são `extract`, `translate`, `extract-and-translate`, `transcribe` e `transcribe-and-translate`. Em ações combinadas, `--output` é o SRT original e `--translated-output` é o SRT traduzido. A tradução de uma faixa extraída usa o idioma dos metadados; quando ausente, usa detecção automática. `--source-language auto` também habilita detecção automática na ação `translate`. Consulte as opções com `cargo run -- --help`.
 
 ## Extração
 
@@ -152,7 +158,6 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 
 ### Em desenvolvimento
 
-- modo terminal com args completo
 - remoção do uso do ffprobe para alg próprio
 - remoção do uso do ffmpeg para alg próprio
 - interface grafica

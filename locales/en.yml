@@ -81,9 +81,10 @@ whisper:
 errors:
   ffmpeg_start: "Failed to run ffmpeg: %{error}"
   ffmpeg_status: "ffmpeg exited with an error: %{status}\nffmpeg stderr:\n%{stderr}"
-  ffprobe_start: "Failed to run ffprobe: %{error}"
-  ffprobe_status: "ffprobe exited with an error: %{status}\nffprobe stderr:\n%{stderr}"
-  ffprobe_json: "Failed to parse ffprobe output as JSON: %{error}"
+  media_open: "Failed to open media file %{input}: %{error}"
+  media_read: "Failed to read media file %{input}: %{error}"
+  media_parse: "Failed to parse %{container} file: %{error}"
+  unsupported_media: "Unsupported media format for subtitle detection: %{input} (supported: MKV, WebM, MP4, MOV)"
   whisper_unavailable: "Could not start Whisper: %{error}"
   whisper_help: "Could not inspect Whisper options (%{status}): %{stderr}"
   whisper_languages: "Could not determine the languages supported by Whisper."

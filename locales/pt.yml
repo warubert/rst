@@ -81,9 +81,10 @@ whisper:
 errors:
   ffmpeg_start: "Falha ao executar ffmpeg: %{error}"
   ffmpeg_status: "Comando ffmpeg terminou com erro: %{status}\nstderr do ffmpeg:\n%{stderr}"
-  ffprobe_start: "Falha ao executar ffprobe: %{error}"
-  ffprobe_status: "Comando ffprobe terminou com erro: %{status}\nstderr do ffprobe:\n%{stderr}"
-  ffprobe_json: "Falha ao converter a saída do ffprobe em JSON: %{error}"
+  media_open: "Falha ao abrir o arquivo de mídia %{input}: %{error}"
+  media_read: "Falha ao ler o arquivo de mídia %{input}: %{error}"
+  media_parse: "Falha ao analisar o arquivo %{container}: %{error}"
+  unsupported_media: "Formato de mídia sem suporte para detectar legendas: %{input} (suportados: MKV, WebM, MP4, MOV)"
   whisper_unavailable: "Não foi possível iniciar o Whisper: %{error}"
   whisper_help: "Não foi possível consultar as opções do Whisper (%{status}): %{stderr}"
   whisper_languages: "Não foi possível identificar os idiomas aceitos pelo Whisper."

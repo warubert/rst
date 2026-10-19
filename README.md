@@ -2,7 +2,7 @@
 
 Ferramenta de terminal escrita em Rust para extrair legendas de arquivos de vídeo e salvá-las em formato `.srt`.
 
-O RST usa `ffprobe` para detectar as faixas de legenda e `ffmpeg` para exportar a faixa selecionada.
+O RST detecta as faixas de legenda de arquivos MKV/WebM e MP4/MOV com parsers Rust integrados. O `ffmpeg` continua sendo usado para exportar a faixa selecionada.
 
 ## Funcionalidades
 
@@ -22,11 +22,11 @@ O idioma escolhido em **Opções** é salvo nas configurações do usuário e te
 
 ## Requisitos
 
-É necessário ter o FFmpeg instalado e os comandos `ffmpeg` e `ffprobe` disponíveis no `PATH`:
+É necessário ter o FFmpeg instalado e o comando `ffmpeg` disponível no `PATH`:
 
 - Linux: normalmente via gerenciador de pacotes (`sudo apt install ffmpeg`, `sudo dnf install ffmpeg`, etc.)
 - macOS: `brew install ffmpeg`
-- Windows: instalar FFmpeg e garantir que `ffmpeg` e `ffprobe` fiquem no PATH
+- Windows: instalar FFmpeg e garantir que `ffmpeg` fique no PATH
 
 Também é necessário ter o Rust e o Cargo instalados para compilar o projeto.
 
@@ -158,7 +158,6 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 
 ### Em desenvolvimento
 
-- remoção do uso do ffprobe para alg próprio
 - remoção do uso do ffmpeg para alg próprio
 - interface grafica
 - repo ubuntu e deb

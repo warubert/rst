@@ -260,7 +260,7 @@ fn run_extraction(input: String) {
     let output_srt_string = session.prompt_output_name(&input);
 
     let status = t!(
-        "messages.command",
+        "messages.extracting",
         input = &input,
         index = selected_subtitle.index,
         output = &output_srt_string
@@ -291,7 +291,7 @@ fn run_combined_extraction(input: String) {
         |video| Some(session.borrow_mut().prompt_output_name(video)),
         |video, index, output| {
             let status = t!(
-                "messages.command",
+                "messages.extracting",
                 input = video,
                 index = index,
                 output = output

@@ -2,7 +2,7 @@
 
 Ferramenta de terminal escrita em Rust para extrair legendas de arquivos de vídeo e salvá-las em formato `.srt`.
 
-O RST detecta as faixas de legenda de arquivos MKV/WebM e MP4/MOV com parsers Rust integrados. O `ffmpeg` continua sendo usado para exportar a faixa selecionada.
+O RST detecta e extrai faixas de legenda de arquivos MKV/WebM e MP4/MOV com parsers Rust integrados.
 
 ## Funcionalidades
 
@@ -22,15 +22,9 @@ O idioma escolhido em **Opções** é salvo nas configurações do usuário e te
 
 ## Requisitos
 
-É necessário ter o FFmpeg instalado e o comando `ffmpeg` disponível no `PATH`:
-
-- Linux: normalmente via gerenciador de pacotes (`sudo apt install ffmpeg`, `sudo dnf install ffmpeg`, etc.)
-- macOS: `brew install ffmpeg`
-- Windows: instalar FFmpeg e garantir que `ffmpeg` fique no PATH
-
 Também é necessário ter o Rust e o Cargo instalados para compilar o projeto.
 
-Para criar legendas com Whisper, instale o [OpenAI Whisper](https://github.com/openai/whisper) e deixe o comando `whisper` disponível no `PATH` (por exemplo, `pip install -U openai-whisper`). Essa opção fica indisponível se o comando não puder ser executado. O FFmpeg também é necessário para o Whisper ler o áudio.
+Para criar legendas com Whisper, instale o [OpenAI Whisper](https://github.com/openai/whisper) e deixe os comandos `whisper` e `ffmpeg` disponíveis no `PATH` (por exemplo, `pip install -U openai-whisper` e `sudo apt install ffmpeg`). Essa opção fica indisponível se o comando Whisper não puder ser executado; o FFmpeg é usado pelo Whisper para ler o áudio.
 
 ## Testes
 
@@ -40,7 +34,7 @@ Execute a suíte automatizada com:
 cargo test
 ```
 
-Os testes cobrem o parsing das faixas de legenda, os argumentos usados na extração e transcrição, o progresso do Whisper, o fluxo de entrada com e sem argumento, as ações do menu, a geração do nome `.srt`, a seleção e persistência do idioma, a renderização das telas Ratatui e o fluxo combinado de extração e tradução com dependências simuladas.
+Os testes cobrem o parsing e a extração de faixas de legenda, a conversão para SRT, a transcrição, o progresso do Whisper, o fluxo de entrada com e sem argumento, as ações do menu, a geração do nome `.srt`, a seleção e persistência do idioma, a renderização das telas Ratatui e o fluxo combinado de extração e tradução com dependências simuladas.
 
 Para verificar formatação, compilação e lint:
 
@@ -98,11 +92,7 @@ As ações aceitas são `extract`, `translate`, `extract-and-translate`, `transc
 
 ## Extração
 
-O comando FFmpeg usado para extrair a faixa selecionada segue este formato:
-
-```bash
-ffmpeg -i arquivo.mkv -map 0:INDICE_DA_FAIXA arquivo_saida.srt
-```
+São aceitas faixas textuais comuns em MKV/WebM (`S_TEXT/UTF8`, ASS/SSA e WebVTT) e faixas `mov_text` em MP4/MOV.
 
 Se o nome de saída não for informado, o programa usa o nome do arquivo de vídeo com a extensão `.srt`.
 
@@ -158,7 +148,6 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 
 ### Em desenvolvimento
 
-- remoção do uso do ffmpeg para alg próprio
 - interface grafica
 - repo ubuntu e deb
 - compilar executavel para diversas arquiteturas

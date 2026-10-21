@@ -10,6 +10,7 @@ O RST detecta e extrai faixas de legenda de arquivos MKV/WebM e MP4/MOV com pars
 - Permite selecionar a faixa a extrair
 - Salva a legenda selecionada em formato `.srt`
 - Oferece uma interface interativa de terminal com Ratatui
+- Permite navegar por pastas e selecionar arquivos de vídeo e `.srt` na interface
 - Disponibiliza a interface em português, inglês e espanhol
 - Detecta o idioma do sistema na primeira execução e permite alterá-lo em **Opções**
 - Usa inglês quando o idioma do sistema não é português, inglês ou espanhol
@@ -70,11 +71,11 @@ Inicie sem argumentos para abrir o menu:
 cargo run
 ```
 
-Use as setas para navegar e Enter para selecionar. Escolha **Extrair legenda** para informar o caminho do vídeo, selecionar uma faixa e definir o nome do arquivo `.srt` de saída.
+Use as setas para navegar e Enter para selecionar. Todas as telas da interface, exceto o menu principal, abrem em uma janela sobre ele. No explorador, digite para filtrar arquivos e pastas; Enter abre uma pasta ou seleciona um arquivo; Backspace apaga o filtro ou volta à pasta anterior; F2 permite digitar o caminho manualmente; Esc cancela. Durante a extração e a tradução, a interface mostra o progresso percentual. Escolha **Extrair legenda** para selecionar o vídeo, escolher uma faixa e definir o nome do arquivo `.srt` de saída.
 
 Escolha **Extrair e traduzir** para extrair uma faixa do vídeo e traduzi-la em seguida. O idioma original é obtido dos metadados da faixa selecionada, então o programa pergunta apenas o idioma de destino. O SRT extraído é mantido junto com um segundo arquivo traduzido; é possível cancelar a tradução após a extração e manter o primeiro arquivo. Se os metadados não informarem o idioma, a detecção automática é usada.
 
-Escolha **Criar legendas com Whisper** para informar o caminho do vídeo, selecionar o idioma falado no autocomplete e definir o nome do `.srt` de saída. O nome sugerido por padrão mantém o nome-base do vídeo; o arquivo pode ser alterado ou receber outro caminho. O programa mostra o percentual informado pelo Whisper.
+Escolha **Criar legendas com Whisper** para selecionar o vídeo, escolher o idioma falado no autocomplete e definir o nome do `.srt` de saída. O nome sugerido por padrão mantém o nome-base do vídeo; o arquivo pode ser alterado ou receber outro caminho. O programa mostra o percentual informado pelo Whisper.
 
 Escolha **Criar legendas com Whisper e traduzir** para gerar o SRT no idioma falado e traduzi-lo em seguida. O idioma selecionado no Whisper é usado como origem da tradução; o SRT original é preservado mesmo que a tradução seja cancelada ou falhe.
 
@@ -100,8 +101,8 @@ Se o nome de saída não for informado, o programa usa o nome do arquivo de víd
 
 Escolha **Traduzir legenda** no menu. O programa pergunta, em ordem:
 
-1. o caminho do arquivo `.srt`;
-2. o idioma original da legenda (padrão `auto`, detecção automática);
+1. o arquivo `.srt`, pelo explorador de arquivos ou digitando o caminho com `T`;
+2. o idioma original em uma lista pesquisável, com **Automático** selecionado por padrão;
 3. o idioma de destino, em uma lista pesquisável com os 249 idiomas do catálogo Google (nomes no idioma selecionado no programa; filtre por nome ou código; padrão: o idioma configurado no programa);
 4. o nome do arquivo traduzido (padrão: `nome_original-idioma.srt`, por exemplo `AloneS13E13-pt.srt`).
 
@@ -130,8 +131,6 @@ Ela pode ser digitada em **Opções** ou fornecida pela variável de ambiente `G
    GOOGLE_TRANSLATE_API_KEY=sua_chave_aqui
    ```
 
-2. O `.env` está no `.gitignore` e não deve ser commitado. O `.env.example` é versionado apenas como modelo, sem a chave real.
-
 Para obter uma chave:
 
 1. Acesse o [Google Cloud Console](https://console.cloud.google.com/) e crie ou selecione um projeto.
@@ -148,6 +147,8 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 
 ### Em desenvolvimento
 
-- interface grafica
+- organizar modulos
+- organizar testes
+- tentar deixar mais bonito
 - repo ubuntu e deb
 - compilar executavel para diversas arquiteturas

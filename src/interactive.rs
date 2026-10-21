@@ -59,15 +59,14 @@ fn run_action_loop(
     }
 }
 
-fn run_translation() {
+fn run_translation(session: &mut tui::TuiSession) {
     let api_key = translate::api_key();
-    let mut session = tui::TuiSession::new();
 
     let Some(input) = session.prompt_srt_path() else {
         return;
     };
 
-    match translate_srt_interactive(&mut session, &input, api_key.as_deref(), None) {
+    match translate_srt_interactive(session, &input, api_key.as_deref(), None) {
         Ok(Some(output)) => {
             session.show_message(
                 MessageKind::Success,
@@ -123,15 +122,13 @@ fn transcribe_with_progress(
     })
 }
 
-fn run_transcription() {
-    let mut session = tui::TuiSession::new();
+fn run_transcription(session: &mut tui::TuiSession) {
     let transcriber = whisper::Whisper;
-    let Some((input, language, output)) = prompt_transcription_inputs(&mut session, &transcriber)
-    else {
+    let Some((input, language, output)) = prompt_transcription_inputs(session, &transcriber) else {
         return;
     };
 
-    let result = transcribe_with_progress(&mut session, &transcriber, &input, &language, &output);
+    let result = transcribe_with_progress(session, &transcriber, &input, &language, &output);
 
     match result {
         Ok(output) => {
@@ -148,17 +145,15 @@ fn run_transcription() {
     }
 }
 
-fn run_whisper_and_translate() {
-    let mut session = tui::TuiSession::new();
+fn run_whisper_and_translate(session: &mut tui::TuiSession) {
     let transcriber = whisper::Whisper;
     let api_key = translate::api_key();
-    let Some((input, language, output)) = prompt_transcription_inputs(&mut session, &transcriber)
-    else {
+    let Some((input, language, output)) = prompt_transcription_inputs(session, &transcriber) else {
         return;
     };
 
     let transcribed =
-        match transcribe_with_progress(&mut session, &transcriber, &input, &language, &output) {
+        match transcribe_with_progress(session, &transcriber, &input, &language, &output) {
             Ok(output) => output,
             Err(error) => {
                 session.show_message(MessageKind::Error, &error);
@@ -167,12 +162,7 @@ fn run_whisper_and_translate() {
         };
     let transcribed = transcribed.to_string_lossy().into_owned();
 
-    match translate_srt_interactive(
-        &mut session,
-        &transcribed,
-        api_key.as_deref(),
-        Some(&language),
-    ) {
+    match translate_srt_interactive(session, &transcribed, api_key.as_deref(), Some(&language)) {
         Ok(Some(translated)) => session.show_message(
             MessageKind::Success,
             &messages::whisper_translation_success_message(
@@ -206,6 +196,50 @@ fn resolve_translation_source(
     }
 }
 
+fn translate_with_progress(
+    session: &mut tui::TuiSession,
+    input: &str,
+    output: &str,
+    source: &str,
+    target: &str,
+    api_key: Option<&str>,
+    status: &str,
+) -> Result<(), String> {
+    session.show_progress(status, 0);
+    let mut last_percent = 0;
+    translate::translate_file_with_progress(
+        input,
+        output,
+        source,
+        target,
+        api_key,
+        &mut |percent| {
+            if percent > last_percent {
+                last_percent = percent;
+                session.show_progress(status, percent);
+            }
+        },
+    )
+}
+
+fn extract_with_progress(
+    session: &mut tui::TuiSession,
+    extractor: &impl SubtitleExtractor,
+    input: &str,
+    index: i64,
+    output: &str,
+    status: &str,
+) -> Result<(), String> {
+    session.show_progress(status, 0);
+    let mut last_percent = 0;
+    extractor.extract_subtitle_with_progress(input, index, output, &mut |percent| {
+        if percent > last_percent {
+            last_percent = percent;
+            session.show_progress(status, percent);
+        }
+    })
+}
+
 fn translate_srt_interactive(
     session: &mut tui::TuiSession,
     input: &str,
@@ -230,29 +264,26 @@ fn translate_srt_interactive(
         source = &source,
         target = &target
     );
-    session.with_status(&status, || {
-        translate::translate_file(input, &output, &source, &target, api_key)
-    })?;
+    translate_with_progress(session, input, &output, &source, &target, api_key, &status)?;
 
     Ok(Some(output))
 }
 
-fn run_extraction(input: String) {
+fn run_extraction(input: String, session: &mut tui::TuiSession) {
     let probe = ffprobe::Ffprobe;
     let subtitle_streams = match probe.get_subtitle_streams(&input) {
         Ok(streams) => streams,
         Err(error) => {
-            tui::show_message(MessageKind::Error, &error);
+            session.show_message(MessageKind::Error, &error);
             return;
         }
     };
 
     if subtitle_streams.is_empty() {
-        tui::show_message(MessageKind::Info, &t!("messages.no_subtitles"));
+        session.show_message(MessageKind::Info, &t!("messages.no_subtitles"));
         return;
     }
 
-    let mut session = tui::TuiSession::new();
     let Some(selected_index) = session.select_subtitle(&subtitle_streams) else {
         return;
     };
@@ -266,9 +297,14 @@ fn run_extraction(input: String) {
         output = &output_srt_string
     );
     let extractor = ffmpeg::Ffmpeg;
-    let result = session.with_status(&status, || {
-        extractor.extract_subtitle(&input, selected_subtitle.index, &output_srt_string)
-    });
+    let result = extract_with_progress(
+        session,
+        &extractor,
+        &input,
+        selected_subtitle.index,
+        &output_srt_string,
+        &status,
+    );
 
     match result {
         Ok(()) => session.show_message(
@@ -279,11 +315,11 @@ fn run_extraction(input: String) {
     }
 }
 
-fn run_combined_extraction(input: String) {
+fn run_combined_extraction(input: String, tui_session: &mut tui::TuiSession) {
     let probe = ffprobe::Ffprobe;
     let extractor = ffmpeg::Ffmpeg;
     let api_key = translate::api_key();
-    let session = RefCell::new(tui::TuiSession::new());
+    let session = RefCell::new(tui_session);
     let outcome = workflow::extract_and_translate(
         &input,
         &probe,
@@ -296,9 +332,14 @@ fn run_combined_extraction(input: String) {
                 index = index,
                 output = output
             );
-            session
-                .borrow_mut()
-                .with_status(&status, || extractor.extract_subtitle(video, index, output))
+            extract_with_progress(
+                &mut session.borrow_mut(),
+                &extractor,
+                video,
+                index,
+                output,
+                &status,
+            )
         },
         |extracted, language| {
             translate_srt_interactive(
@@ -350,15 +391,18 @@ fn run_combined_extraction(input: String) {
 }
 
 pub fn run() {
+    let session = RefCell::new(tui::TuiSession::new());
     run_action_loop(
-        tui::main_menu,
-        tui::prompt_input_path,
+        || session.borrow_mut().main_menu(),
+        || session.borrow_mut().prompt_input_path(),
         |action| match action {
-            Action::Extract(input) => run_extraction(input),
-            Action::Translate => run_translation(),
-            Action::ExtractAndTranslate(input) => run_combined_extraction(input),
-            Action::Transcribe => run_transcription(),
-            Action::TranscribeAndTranslate => run_whisper_and_translate(),
+            Action::Extract(input) => run_extraction(input, &mut session.borrow_mut()),
+            Action::Translate => run_translation(&mut session.borrow_mut()),
+            Action::ExtractAndTranslate(input) => {
+                run_combined_extraction(input, &mut session.borrow_mut())
+            }
+            Action::Transcribe => run_transcription(&mut session.borrow_mut()),
+            Action::TranscribeAndTranslate => run_whisper_and_translate(&mut session.borrow_mut()),
             Action::Cancelled => {}
         },
     );

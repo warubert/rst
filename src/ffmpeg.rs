@@ -18,9 +18,29 @@ impl SubtitleExtractor for Ffmpeg {
     ) -> Result<(), String> {
         extract_subtitle(input, subtitle_index, output_srt)
     }
+
+    fn extract_subtitle_with_progress(
+        &self,
+        input: &str,
+        subtitle_index: i64,
+        output_srt: &str,
+        on_progress: &mut dyn FnMut(u8),
+    ) -> Result<(), String> {
+        extract_subtitle_reporting_progress(input, subtitle_index, output_srt, on_progress)
+    }
 }
 
 fn extract_subtitle(input: &str, subtitle_index: i64, output_srt: &str) -> Result<(), String> {
+    extract_subtitle_reporting_progress(input, subtitle_index, output_srt, &mut |_| {})
+}
+
+fn extract_subtitle_reporting_progress(
+    input: &str,
+    subtitle_index: i64,
+    output_srt: &str,
+    on_progress: &mut dyn FnMut(u8),
+) -> Result<(), String> {
+    on_progress(0);
     let mut file = File::open(input)
         .map_err(|error| t!("errors.media_open", input = input, error = error).to_string())?;
     let mut signature = [0; 8];
@@ -38,16 +58,18 @@ fn extract_subtitle(input: &str, subtitle_index: i64, output_srt: &str) -> Resul
     let cues = if (signature_len >= 4 && signature[..4] == [0x1a, 0x45, 0xdf, 0xa3])
         || matches!(extension.as_str(), "mkv" | "webm")
     {
-        extract_matroska_subtitle(file, subtitle_index)?
+        extract_matroska_subtitle(file, subtitle_index, on_progress)?
     } else if (signature_len >= 8 && &signature[4..8] == b"ftyp")
         || matches!(extension.as_str(), "mp4" | "mov")
     {
-        extract_mp4_subtitle(file, input, subtitle_index)?
+        extract_mp4_subtitle(file, input, subtitle_index, on_progress)?
     } else {
         return Err(t!("errors.unsupported_media", input = input).to_string());
     };
 
-    write_srt(output_srt, &serialize(&cues))
+    write_srt(output_srt, &serialize(&cues))?;
+    on_progress(100);
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -57,7 +79,11 @@ struct ExtractedCue {
     text: String,
 }
 
-fn extract_matroska_subtitle(file: File, subtitle_index: i64) -> Result<Vec<Cue>, String> {
+fn extract_matroska_subtitle(
+    file: File,
+    subtitle_index: i64,
+    on_progress: &mut dyn FnMut(u8),
+) -> Result<Vec<Cue>, String> {
     let mut container = matroska_demuxer::MatroskaFile::open(file).map_err(|error| {
         t!("errors.media_parse", container = "Matroska", error = error).to_string()
     })?;
@@ -75,11 +101,18 @@ fn extract_matroska_subtitle(file: File, subtitle_index: i64) -> Result<Vec<Cue>
 
     let track_number = selected_track.track_number().get();
     let timestamp_scale = container.info().timestamp_scale().get();
+    let duration = container
+        .info()
+        .duration()
+        .filter(|duration| duration.is_finite() && *duration > 0.0);
     let mut frames = Vec::new();
     let mut frame = matroska_demuxer::Frame::default();
     while container.next_frame(&mut frame).map_err(|error| {
         t!("errors.media_parse", container = "Matroska", error = error).to_string()
     })? {
+        if let Some(percent) = matroska_progress_percent(frame.timestamp, duration) {
+            on_progress(percent);
+        }
         if frame.track != track_number {
             continue;
         }
@@ -100,7 +133,12 @@ fn extract_matroska_subtitle(file: File, subtitle_index: i64) -> Result<Vec<Cue>
     Ok(frames_to_cues(frames))
 }
 
-fn extract_mp4_subtitle(file: File, input: &str, subtitle_index: i64) -> Result<Vec<Cue>, String> {
+fn extract_mp4_subtitle(
+    file: File,
+    input: &str,
+    subtitle_index: i64,
+    on_progress: &mut dyn FnMut(u8),
+) -> Result<Vec<Cue>, String> {
     let file_size = file
         .metadata()
         .map_err(|error| t!("errors.media_read", input = input, error = error).to_string())?
@@ -137,6 +175,10 @@ fn extract_mp4_subtitle(file: File, input: &str, subtitle_index: i64) -> Result<
 
     let mut frames = Vec::new();
     for sample_id in 1..=sample_count {
+        if sample_count > 0 {
+            let percent = progress_percent(u64::from(sample_id), u64::from(sample_count)).min(99);
+            on_progress(percent);
+        }
         let Some(sample) = container
             .read_sample(track_id, sample_id)
             .map_err(|error| {
@@ -169,6 +211,24 @@ fn extract_mp4_subtitle(file: File, input: &str, subtitle_index: i64) -> Result<
     }
 
     Ok(frames_to_cues(frames))
+}
+
+fn progress_percent(completed: u64, total: u64) -> u8 {
+    if total == 0 {
+        return 0;
+    }
+
+    (u128::from(completed) * 100 / u128::from(total)).min(100) as u8
+}
+
+fn matroska_progress_percent(timestamp: u64, duration: Option<f64>) -> Option<u8> {
+    duration
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+        .map(|duration| {
+            ((timestamp as f64 / duration) * 100.0)
+                .floor()
+                .clamp(0.0, 99.0) as u8
+        })
 }
 
 fn selected_track_index(subtitle_index: i64, track_count: usize) -> Result<usize, String> {
@@ -442,8 +502,19 @@ fn write_srt(output: &str, content: &str) -> Result<(), String> {
 mod tests {
     use super::{
         ExtractedCue, ass_text_payload, ass_to_srt_text, decode_tx3g_sample, format_srt_timestamp,
-        frames_to_cues, is_matroska_text_codec, selected_track_index,
+        frames_to_cues, is_matroska_text_codec, matroska_progress_percent, progress_percent,
+        selected_track_index,
     };
+
+    #[test]
+    fn computes_extraction_progress_without_reporting_completion_early() {
+        assert_eq!(progress_percent(1, 4), 25);
+        assert_eq!(progress_percent(0, 0), 0);
+        assert_eq!(matroska_progress_percent(25, Some(100.0)), Some(25));
+        assert_eq!(matroska_progress_percent(100, Some(100.0)), Some(99));
+        assert_eq!(matroska_progress_percent(25, None), None);
+        assert_eq!(matroska_progress_percent(25, Some(0.0)), None);
+    }
 
     #[test]
     fn selects_global_stream_indices_and_rejects_invalid_indices() {

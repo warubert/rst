@@ -147,7 +147,6 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 
 ### Em desenvolvimento
 
-- organizar modulos
 - organizar testes
 - tentar deixar mais bonito
 - repo ubuntu e deb

@@ -195,4 +195,5 @@ pub fn run(command: CliCommand) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[path = "../tests/cli.rs"]
 mod tests;

@@ -137,4 +137,5 @@ fn translate_file_with_progress_using<T: Translator>(
 }
 
 #[cfg(test)]
+#[path = "../tests/translate.rs"]
 mod tests;

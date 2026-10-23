@@ -456,4 +456,5 @@ fn select_subtitle_in_terminal(
 }
 
 #[cfg(test)]
+#[path = "../tests/tui.rs"]
 mod tests;

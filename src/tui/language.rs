@@ -1,4 +1,6 @@
-use super::{TuiTerminal, draw_main_menu_overlay, next_selection, previous_selection, require_ui};
+use super::{
+    TuiTerminal, draw_main_menu_overlay, next_selection, previous_selection, require_ui, theme,
+};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     Frame,
@@ -123,7 +125,9 @@ pub(super) fn draw_language_selector(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(labels.search.to_string()),
+                .title(labels.search.to_string())
+                .border_style(theme::border())
+                .title_style(theme::title()),
         );
     frame.render_widget(search, chunks[0]);
 
@@ -152,14 +156,11 @@ pub(super) fn draw_language_selector(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(labels.field.to_string()),
+                .title(labels.field.to_string())
+                .border_style(theme::border())
+                .title_style(theme::title()),
         )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightBlue)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(theme::selection())
         .highlight_symbol(">> ");
     frame.render_stateful_widget(list, chunks[1], &mut state);
 
@@ -168,7 +169,9 @@ pub(super) fn draw_language_selector(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(t!("menu.actions", locale = locale).to_string()),
+                .title(t!("menu.actions", locale = locale).to_string())
+                .border_style(theme::border())
+                .title_style(theme::title()),
         );
     frame.render_widget(help, chunks[2]);
 }

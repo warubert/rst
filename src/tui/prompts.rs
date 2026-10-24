@@ -1,5 +1,5 @@
 use super::screens::mask_input;
-use super::{TuiTerminal, draw_main_menu_overlay, require_ui};
+use super::{TuiTerminal, draw_main_menu_overlay, require_ui, theme};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     Frame,
@@ -64,7 +64,13 @@ pub(super) fn draw_prompt_in_area(
 
     let title = Paragraph::new(title.to_string())
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).title("RST"));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("RST")
+                .border_style(theme::border())
+                .title_style(theme::title()),
+        );
     frame.render_widget(title, chunks[0]);
 
     let field = Paragraph::new(display.to_string())
@@ -77,7 +83,9 @@ pub(super) fn draw_prompt_in_area(
             Block::default()
                 .borders(Borders::ALL)
                 .title(field_title.to_string())
-                .title_alignment(Alignment::Center),
+                .title_alignment(Alignment::Center)
+                .border_style(theme::border())
+                .title_style(theme::title()),
         );
     frame.render_widget(field, chunks[1]);
 }

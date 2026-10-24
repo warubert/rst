@@ -1,5 +1,7 @@
 use super::prompts::prompt_line_in_terminal;
-use super::{TuiTerminal, draw_main_menu_overlay, next_selection, previous_selection, require_ui};
+use super::{
+    TuiTerminal, draw_main_menu_overlay, next_selection, previous_selection, require_ui, theme,
+};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     Frame,
@@ -131,7 +133,7 @@ pub(super) fn file_picker_entry_label(entry: &FilePickerEntry) -> String {
 pub(super) fn file_picker_entry_style(entry: &FilePickerEntry, filter: FilePickerFilter) -> Style {
     match entry {
         FilePickerEntry::File(path) if matches_file_picker_filter(path, filter) => {
-            Style::default().fg(Color::Green)
+            Style::default().fg(theme::FILE)
         }
         _ => Style::default(),
     }
@@ -175,7 +177,9 @@ pub(super) fn draw_file_picker(frame: &mut Frame<'_>, view: FilePickerView<'_>) 
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(t!("tui.file_picker_path", locale = view.locale).to_string()),
+                .title(t!("tui.file_picker_path", locale = view.locale).to_string())
+                .border_style(theme::border())
+                .title_style(theme::title()),
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(location, chunks[0]);
@@ -183,7 +187,9 @@ pub(super) fn draw_file_picker(frame: &mut Frame<'_>, view: FilePickerView<'_>) 
     let search = Paragraph::new(view.query.to_string()).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(t!("tui.file_picker_search", locale = view.locale).to_string()),
+            .title(t!("tui.file_picker_search", locale = view.locale).to_string())
+            .border_style(theme::border())
+            .title_style(theme::title()),
     );
     frame.render_widget(search, chunks[1]);
 
@@ -195,13 +201,25 @@ pub(super) fn draw_file_picker(frame: &mut Frame<'_>, view: FilePickerView<'_>) 
     };
     if let Some(error) = view.error {
         let error = Paragraph::new(error.to_string())
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(theme::border())
+                    .title_style(theme::title()),
+            )
             .wrap(Wrap { trim: true });
         frame.render_widget(error, chunks[2]);
     } else if view.entries.is_empty() {
         let empty =
             Paragraph::new(t!("tui.file_picker_no_matches", locale = view.locale).to_string())
-                .block(Block::default().borders(Borders::ALL).title(title))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(title)
+                        .border_style(theme::border())
+                        .title_style(theme::title()),
+                )
                 .wrap(Wrap { trim: true });
         frame.render_widget(empty, chunks[2]);
     } else {
@@ -218,10 +236,16 @@ pub(super) fn draw_file_picker(frame: &mut Frame<'_>, view: FilePickerView<'_>) 
             state.select(Some(view.selected.min(items.len() - 1)));
         }
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(theme::border())
+                    .title_style(theme::title()),
+            )
             .highlight_style(
                 Style::default()
-                    .bg(Color::LightBlue)
+                    .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol(">> ");
@@ -230,7 +254,11 @@ pub(super) fn draw_file_picker(frame: &mut Frame<'_>, view: FilePickerView<'_>) 
 
     let help = Paragraph::new(t!("tui.file_picker_help", locale = view.locale).to_string())
         .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::border()),
+        );
     frame.render_widget(help, chunks[3]);
 }
 

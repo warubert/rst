@@ -1,4 +1,4 @@
-use super::draw_main_menu_overlay;
+use super::{draw_main_menu_overlay, theme};
 use crate::interfaces::probe::Subtitle;
 use ratatui::{
     Frame,
@@ -141,14 +141,14 @@ pub(super) fn draw_main_menu(
     let logo = Paragraph::new(logo)
         .style(
             Style::default()
-                .fg(Color::LightCyan)
+                .fg(theme::ACCENT)
                 .add_modifier(Modifier::BOLD),
         )
         .alignment(Alignment::Center);
     frame.render_widget(logo, chunks[0]);
 
     let tagline = Paragraph::new("Rust Subtitle Tools")
-        .style(Style::default().fg(Color::Gray))
+        .style(Style::default().fg(theme::MUTED))
         .alignment(Alignment::Center);
     frame.render_widget(tagline, chunks[1]);
 
@@ -163,14 +163,11 @@ pub(super) fn draw_main_menu(
         .block(
             Block::default()
                 .title(t!("menu.title", locale = locale).to_string())
-                .borders(Borders::ALL),
+                .borders(Borders::ALL)
+                .border_style(theme::border())
+                .title_style(theme::title()),
         )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightBlue)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(theme::selection())
         .highlight_symbol(">> ");
     frame.render_stateful_widget(menu, chunks[2], &mut list_state);
 
@@ -179,7 +176,9 @@ pub(super) fn draw_main_menu(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(t!("menu.actions", locale = locale).to_string()),
+                .title(t!("menu.actions", locale = locale).to_string())
+                .border_style(theme::border())
+                .title_style(theme::title()),
         );
     frame.render_widget(help, chunks[3]);
 }
@@ -207,14 +206,11 @@ pub(super) fn draw_language_menu(frame: &mut Frame<'_>, area: Rect, selected: us
         .block(
             Block::default()
                 .title(t!("language.title", locale = locale).to_string())
-                .borders(Borders::ALL),
+                .borders(Borders::ALL)
+                .border_style(theme::border())
+                .title_style(theme::title()),
         )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightBlue)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(theme::selection())
         .highlight_symbol(">> ");
     frame.render_stateful_widget(languages, chunks[0], &mut state);
 
@@ -223,7 +219,9 @@ pub(super) fn draw_language_menu(frame: &mut Frame<'_>, area: Rect, selected: us
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(t!("menu.actions", locale = locale).to_string()),
+                .title(t!("menu.actions", locale = locale).to_string())
+                .border_style(theme::border())
+                .title_style(theme::title()),
         );
     frame.render_widget(help, chunks[1]);
 }
@@ -253,14 +251,11 @@ pub(super) fn draw_settings_menu(
         .block(
             Block::default()
                 .title(t!("settings.title", locale = locale).to_string())
-                .borders(Borders::ALL),
+                .borders(Borders::ALL)
+                .border_style(theme::border())
+                .title_style(theme::title()),
         )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightBlue)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(theme::selection())
         .highlight_symbol(">> ");
     frame.render_stateful_widget(settings_list, chunks[0], &mut state);
 
@@ -270,7 +265,9 @@ pub(super) fn draw_settings_menu(
     let help = Paragraph::new(hint).alignment(Alignment::Center).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(t!("menu.actions", locale = locale).to_string()),
+            .title(t!("menu.actions", locale = locale).to_string())
+            .border_style(theme::border())
+            .title_style(theme::title()),
     );
     frame.render_widget(help, chunks[1]);
 }
@@ -309,14 +306,11 @@ pub(super) fn draw_subtitle_selection(
         .block(
             Block::default()
                 .title(t!("tui.subtitles", locale = locale).to_string())
-                .borders(Borders::ALL),
+                .borders(Borders::ALL)
+                .border_style(theme::border())
+                .title_style(theme::title()),
         )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightBlue)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(theme::selection())
         .highlight_symbol(">> ");
     frame.render_stateful_widget(subtitles, chunks[0], &mut list_state);
 
@@ -325,7 +319,9 @@ pub(super) fn draw_subtitle_selection(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(t!("menu.actions", locale = locale).to_string()),
+                .title(t!("menu.actions", locale = locale).to_string())
+                .border_style(theme::border())
+                .title_style(theme::title()),
         );
     frame.render_widget(help, chunks[1]);
 }
@@ -341,15 +337,15 @@ pub(super) fn message_title(kind: MessageKind, locale: &str) -> (String, Color) 
     match kind {
         MessageKind::Info => (
             t!("messages.info_title", locale = locale).to_string(),
-            Color::Yellow,
+            theme::INFO,
         ),
         MessageKind::Success => (
             t!("messages.success_title", locale = locale).to_string(),
-            Color::Green,
+            theme::SUCCESS,
         ),
         MessageKind::Error => (
             t!("messages.error_title", locale = locale).to_string(),
-            Color::Red,
+            theme::ERROR,
         ),
     }
 }
@@ -405,7 +401,9 @@ pub(super) fn draw_status(frame: &mut Frame<'_>, area: Rect, body: &str, locale:
             Block::default()
                 .borders(Borders::ALL)
                 .title(t!("messages.working_title", locale = locale).to_string())
-                .title_alignment(Alignment::Center),
+                .title_alignment(Alignment::Center)
+                .border_style(theme::border())
+                .title_style(theme::title()),
         );
     frame.render_widget(status, chunks[0]);
 }
@@ -429,14 +427,20 @@ pub(super) fn draw_progress(
             Block::default()
                 .borders(Borders::ALL)
                 .title(t!("messages.working_title", locale = locale).to_string())
-                .title_alignment(Alignment::Center),
+                .title_alignment(Alignment::Center)
+                .border_style(theme::border())
+                .title_style(theme::title()),
         );
     frame.render_widget(status, chunks[0]);
 
     let percent = percent.min(100);
     let gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL))
-        .gauge_style(Style::default().fg(Color::LightGreen))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::border()),
+        )
+        .gauge_style(Style::default().fg(theme::ACCENT))
         .ratio(f64::from(percent) / 100.0)
         .label(format!("{percent}%"));
     frame.render_widget(gauge, chunks[1]);

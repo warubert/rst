@@ -150,7 +150,7 @@ fn file_picker_marks_supported_extensions_green_for_the_active_filter() {
             FilePickerFilter::Video
         )
         .fg,
-        Some(Color::Green)
+        Some(Color::LightGreen)
     );
     assert_eq!(
         file_picker_entry_style(
@@ -158,7 +158,7 @@ fn file_picker_marks_supported_extensions_green_for_the_active_filter() {
             FilePickerFilter::Subtitle
         )
         .fg,
-        Some(Color::Green)
+        Some(Color::LightGreen)
     );
     assert_eq!(
         file_picker_entry_style(
@@ -238,7 +238,7 @@ fn renders_file_picker_with_location_selection_and_help() {
             .buffer()
             .content()
             .iter()
-            .any(|cell| cell.symbol() == "e" && cell.fg == Color::Green)
+            .any(|cell| cell.symbol() == "e" && cell.fg == Color::LightGreen)
     );
 }
 
@@ -594,6 +594,22 @@ fn renders_main_menu_in_requested_locale() {
     assert!(text.contains("4) Create subtitles with Whisper"));
     assert!(text.contains("5) Create subtitles with Whisper and translate"));
     assert!(text.contains("7) Exit"));
+    assert!(
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|cell| cell.fg == Color::LightCyan)
+    );
+    assert!(
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|cell| cell.bg == Color::Cyan)
+    );
 }
 
 #[test]

@@ -15,6 +15,7 @@ mod file_picker;
 mod language;
 mod prompts;
 mod screens;
+mod theme;
 
 use file_picker::*;
 use language::*;

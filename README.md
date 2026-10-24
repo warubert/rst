@@ -1,6 +1,10 @@
-# RST (Rust Subtitle Tools)
+<h1 align="center">
+  <img src="assets/rst-logo.jpeg" alt="Logo RST com mascote peixe-esqueleto e identidade visual de terminal" width="700">
+</h1>
 
-Ferramenta de terminal escrita em Rust para extrair legendas de arquivos de vídeo e salvá-las em formato `.srt`.
+<p align="center">
+  Ferramenta de terminal escrita em Rust para extrair e traduzir legendas de vídeos.
+</p>
 
 O RST detecta e extrai faixas de legenda de arquivos MKV/WebM e MP4/MOV com parsers Rust integrados.
 
@@ -147,6 +151,5 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 
 ### Em desenvolvimento
 
-- tentar deixar mais bonito
 - repo ubuntu e deb
 - compilar executavel para diversas arquiteturas

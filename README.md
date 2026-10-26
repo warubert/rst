@@ -65,7 +65,39 @@ O idioma fica no arquivo `language`; a chave digitada em **Opções** fica em `g
 cargo build --release
 ```
 
-O executável será criado em `target/release/rst`.
+**Downloads diretos para Debian/Ubuntu** (disponíveis após a próxima release):
+
+- **amd64:** [`.deb`](https://github.com/warubert/rst/releases/latest/download/rst_amd64.deb) · [assinatura GPG](https://github.com/warubert/rst/releases/latest/download/rst_amd64.deb.asc) · [`.tar.gz` com pacote e assinatura](https://github.com/warubert/rst/releases/latest/download/rst_amd64.tar.gz)
+- **arm64:** [`.deb`](https://github.com/warubert/rst/releases/latest/download/rst_arm64.deb) · [assinatura GPG](https://github.com/warubert/rst/releases/latest/download/rst_arm64.deb.asc) · [`.tar.gz` com pacote e assinatura](https://github.com/warubert/rst/releases/latest/download/rst_arm64.tar.gz)
+- **i386 (32 bits):** [`.deb`](https://github.com/warubert/rst/releases/latest/download/rst_i386.deb) · [assinatura GPG](https://github.com/warubert/rst/releases/latest/download/rst_i386.deb.asc) · [`.tar.gz` com pacote e assinatura](https://github.com/warubert/rst/releases/latest/download/rst_i386.tar.gz)
+
+O workflow do GitHub Actions executa formatação, Clippy e testes em amd64 e arm64, e compila os testes i386 sem executá-los no runner de 64 bits. Ao enviar uma tag `vX.Y.Z` igual à versão do `Cargo.toml`, ele cria pacotes `.deb` para amd64, arm64 e i386, publica os arquivos e assinaturas em uma GitHub Release e atualiza os índices do repositório APT assinado no GitHub Pages. O pacote i386 é de 32 bits; em um Ubuntu amd64, é necessário habilitar a arquitetura i386 no APT para instalá-lo.
+
+adicionar o repositório:
+
+```bash
+curl -fsSLo /tmp/rst-public.key https://warubert.github.io/rst/public.key
+gpg --show-keys --with-fingerprint /tmp/rst-public.key
+gpg --dearmor < /tmp/rst-public.key | sudo tee /usr/share/keyrings/rst-archive-keyring.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/rst-archive-keyring.gpg] https://warubert.github.io/rst stable main" | sudo tee /etc/apt/sources.list.d/rst.list
+sudo apt-get update
+sudo apt-get install rst
+```
+
+Para instalar especificamente o pacote de 32 bits (`i386`) em um sistema amd64 com suporte multiarch:
+
+```bash
+sudo dpkg --add-architecture i386
+sudo apt-get update
+sudo apt-get install rst:i386
+```
+
+Para a versão `1.0.0`, crie e envie a tag:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
 
 ## Uso
 

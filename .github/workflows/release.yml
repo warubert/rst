@@ -42,7 +42,7 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install --yes build-essential pkg-config \
-            crossbuild-essential-i386 libc6-dev-i386
+            gcc-i686-linux-gnu g++-i686-linux-gnu libc6-dev-i386-cross
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -94,7 +94,7 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install --yes build-essential pkg-config \
-            crossbuild-essential-i386 libc6-dev-i386
+            gcc-i686-linux-gnu g++-i686-linux-gnu libc6-dev-i386-cross
 
       - uses: dtolnay/rust-toolchain@stable
         with:

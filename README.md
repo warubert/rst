@@ -67,9 +67,13 @@ cargo build --release
 
 **Downloads diretos para Debian/Ubuntu** (disponíveis após a próxima release):
 
-- **amd64:** [`.deb`](https://github.com/warubert/rst/releases/latest/download/rst_amd64.deb) · [assinatura GPG](https://github.com/warubert/rst/releases/latest/download/rst_amd64.deb.asc) · [`.tar.gz` com pacote e assinatura](https://github.com/warubert/rst/releases/latest/download/rst_amd64.tar.gz)
-- **arm64:** [`.deb`](https://github.com/warubert/rst/releases/latest/download/rst_arm64.deb) · [assinatura GPG](https://github.com/warubert/rst/releases/latest/download/rst_arm64.deb.asc) · [`.tar.gz` com pacote e assinatura](https://github.com/warubert/rst/releases/latest/download/rst_arm64.tar.gz)
-- **i386 (32 bits):** [`.deb`](https://github.com/warubert/rst/releases/latest/download/rst_i386.deb) · [assinatura GPG](https://github.com/warubert/rst/releases/latest/download/rst_i386.deb.asc) · [`.tar.gz` com pacote e assinatura](https://github.com/warubert/rst/releases/latest/download/rst_i386.tar.gz)
+| Arquitetura | Pacote Debian | Assinatura GPG | Pacote compactado |
+| --- | --- | --- | --- |
+| amd64 | [rst_amd64.deb](https://github.com/warubert/rst/releases/latest/download/rst_amd64.deb) | [rst_amd64.deb.asc](https://github.com/warubert/rst/releases/latest/download/rst_amd64.deb.asc) | [rst_amd64.tar.gz](https://github.com/warubert/rst/releases/latest/download/rst_amd64.tar.gz) |
+| arm64 | [rst_arm64.deb](https://github.com/warubert/rst/releases/latest/download/rst_arm64.deb) | [rst_arm64.deb.asc](https://github.com/warubert/rst/releases/latest/download/rst_arm64.deb.asc) | [rst_arm64.tar.gz](https://github.com/warubert/rst/releases/latest/download/rst_arm64.tar.gz) |
+| i386 (32 bits) | [rst_i386.deb](https://github.com/warubert/rst/releases/latest/download/rst_i386.deb) | [rst_i386.deb.asc](https://github.com/warubert/rst/releases/latest/download/rst_i386.deb.asc) | [rst_i386.tar.gz](https://github.com/warubert/rst/releases/latest/download/rst_i386.tar.gz) |
+
+Os links apontam para os arquivos da release mais recente. Para baixar versões anteriores, consulte [todas as releases](https://github.com/warubert/rst/releases).
 
 O workflow do GitHub Actions executa formatação, Clippy e testes em amd64 e arm64, e compila os testes i386 sem executá-los no runner de 64 bits. Ao enviar uma tag `vX.Y.Z` igual à versão do `Cargo.toml`, ele cria pacotes `.deb` para amd64, arm64 e i386, publica os arquivos e assinaturas em uma GitHub Release e atualiza os índices do repositório APT assinado no GitHub Pages. O pacote i386 é de 32 bits; em um Ubuntu amd64, é necessário habilitar a arquitetura i386 no APT para instalá-lo.
 

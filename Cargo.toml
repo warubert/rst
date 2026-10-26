@@ -1,7 +1,16 @@
 [package]
 name = "rst"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
+description = "Ferramenta de terminal para extrair e traduzir legendas de vídeos."
+repository = "https://github.com/warubert/rst"
+license = "MIT"
+authors = ["william antunes rubert"]
+
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+copyright = "Copyright (c) 2026 william antunes rubert"
 
 [dependencies]
 crossterm = "0.29.0"

@@ -1,4 +1,4 @@
-name: CI and Debian release
+name: CI and multi-platform release
 
 on:
   pull_request:
@@ -129,10 +129,160 @@ jobs:
           path: target/debian/*.deb
           if-no-files-found: error
 
+  build-windows:
+    name: Build and validate Windows (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            rust_target: x86_64-pc-windows-msvc
+            wix_architecture: x64
+          - architecture: x86
+            rust_target: i686-pc-windows-msvc
+            wix_architecture: x86
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets --target ${{ matrix.rust_target }} -- -D warnings
+
+      - name: Compile tests
+        run: cargo test --locked --target ${{ matrix.rust_target }} --no-run
+
+      - name: Check tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $version = $metadata.packages[0].version
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match Cargo.toml version $version"
+          }
+
+      - name: Build Windows executable
+        run: cargo build --locked --release --target ${{ matrix.rust_target }}
+
+      - name: Install WiX Toolset
+        run: |
+          dotnet tool install --global wix --version 4.0.5
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.dotnet\tools"
+
+      - name: Package ZIP and MSI
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $exe = (Resolve-Path "target/${{ matrix.rust_target }}/release/rst.exe").Path
+          $staging = "dist/rst_windows_${{ matrix.architecture }}"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item $exe "$staging/rst.exe"
+          Copy-Item README.md, LICENSE $staging
+          Compress-Archive -Path "$staging/*" -DestinationPath "rst_windows_${{ matrix.architecture }}.zip" -Force
+          wix build windows/Rst.wxs `
+            -arch ${{ matrix.wix_architecture }} `
+            -d "ProductVersion=$version" `
+            -d "Architecture=${{ matrix.wix_architecture }}" `
+            -d "RstExe=$exe" `
+            -out "rst_windows_${{ matrix.architecture }}.msi"
+
+      - name: Upload Windows packages
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.architecture }}
+          path: |
+            rst_windows_${{ matrix.architecture }}.zip
+            rst_windows_${{ matrix.architecture }}.msi
+          if-no-files-found: error
+
+  build-macos:
+    name: Build and validate macOS (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: arm64
+            runner: macos-26
+            rust_target: aarch64-apple-darwin
+          - architecture: x64
+            runner: macos-26-intel
+            rust_target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: ${{ matrix.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --target ${{ matrix.rust_target }} -- -D warnings
+      - run: cargo test --locked --target ${{ matrix.rust_target }}
+
+      - name: Check tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 |
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+      - name: Build macOS executable
+        run: cargo build --locked --release --target ${{ matrix.rust_target }}
+
+      - name: Package ZIP and PKG
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 |
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          executable="target/${{ matrix.rust_target }}/release/rst"
+          zip_root="dist/rst_macos_${{ matrix.architecture }}"
+          pkg_root="pkg-root-${{ matrix.architecture }}"
+
+          mkdir -p "$zip_root" "$pkg_root/usr/local/bin" "$pkg_root/usr/local/share/doc/rst"
+          cp "$executable" "$zip_root/rst"
+          cp README.md LICENSE "$zip_root/"
+          ditto -c -k --sequesterRsrc --keepParent "$zip_root" \
+            "rst_macos_${{ matrix.architecture }}.zip"
+
+          cp "$executable" "$pkg_root/usr/local/bin/rst"
+          cp README.md LICENSE "$pkg_root/usr/local/share/doc/rst/"
+          pkgbuild \
+            --root "$pkg_root" \
+            --identifier com.warubert.rst \
+            --version "$version" \
+            --install-location / \
+            "rst_macos_${{ matrix.architecture }}.pkg"
+
+      - name: Upload macOS packages
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.architecture }}
+          path: |
+            rst_macos_${{ matrix.architecture }}.zip
+            rst_macos_${{ matrix.architecture }}.pkg
+          if-no-files-found: error
+
   release:
-    name: Sign and publish Debian packages
+    name: Publish Debian and Windows release assets
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build-deb
+    needs:
+      - build-deb
+      - build-windows
+      - build-macos
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -143,6 +293,20 @@ jobs:
         with:
           pattern: deb-*
           path: packages
+          merge-multiple: true
+
+      - name: Download Windows packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: windows-*
+          path: windows-packages
+          merge-multiple: true
+
+      - name: Download macOS packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: macos-*
+          path: macos-packages
           merge-multiple: true
 
       - name: Import GPG signing key
@@ -162,6 +326,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-assets apt-repo/pool/main/r/rst
+          cp windows-packages/*.msi windows-packages/*.zip release-assets/
+          cp macos-packages/*.pkg macos-packages/*.zip release-assets/
 
           for deb in packages/*.deb; do
             architecture=$(dpkg-deb --field "$deb" Architecture)
@@ -189,7 +355,11 @@ jobs:
           test -f release-assets/rst_i386.deb
           gpg --armor --export "$GPG_FINGERPRINT" > release-assets/public.key
           cp release-assets/public.key apt-repo/public.key
-          (cd packages && sha256sum *.deb) > release-assets/SHA256SUMS
+          (
+            cd packages && sha256sum *.deb
+            cd ../windows-packages && sha256sum *.msi *.zip
+            cd ../macos-packages && sha256sum *.pkg *.zip
+          ) > release-assets/SHA256SUMS
           touch apt-repo/.nojekyll
 
           cd apt-repo

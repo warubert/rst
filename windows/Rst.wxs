@@ -1,0 +1,42 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="RST"
+    Manufacturer="William Antunes Rubert"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="{F4C30D48-8D24-4E78-B34A-A7A139A5310B}"
+    Scope="perMachine"
+    InstallerVersion="500">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of RST is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Feature Id="Main" Title="RST" Level="1">
+      <ComponentRef Id="RstExecutable" />
+    </Feature>
+  </Package>
+
+  <?if $(var.Architecture) = x64 ?>
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="RST" />
+    </StandardDirectory>
+  </Fragment>
+  <?else ?>
+  <Fragment>
+    <StandardDirectory Id="ProgramFilesFolder">
+      <Directory Id="INSTALLFOLDER" Name="RST" />
+    </StandardDirectory>
+  </Fragment>
+  <?endif ?>
+
+  <Fragment>
+    <Component Id="RstExecutable" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="RstExe" Source="$(var.RstExe)" KeyPath="yes" />
+      <Environment
+        Id="RstPath"
+        Name="PATH"
+        Value="[INSTALLFOLDER]"
+        Part="last"
+        Action="set"
+        System="yes" />
+    </Component>
+  </Fragment>
+</Wix>

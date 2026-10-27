@@ -65,17 +65,25 @@ O idioma fica no arquivo `language`; a chave digitada em **Opções** fica em `g
 cargo build --release
 ```
 
-**Downloads diretos para Debian/Ubuntu** (disponíveis após a próxima release):
+**Downloads diretos** (disponíveis após a próxima release):
 
-| Arquitetura | Pacote Debian | Assinatura GPG | Pacote compactado |
-| --- | --- | --- | --- |
-| amd64 | [rst_amd64.deb](https://github.com/warubert/rst/releases/latest/download/rst_amd64.deb) | [rst_amd64.deb.asc](https://github.com/warubert/rst/releases/latest/download/rst_amd64.deb.asc) | [rst_amd64.tar.gz](https://github.com/warubert/rst/releases/latest/download/rst_amd64.tar.gz) |
-| arm64 | [rst_arm64.deb](https://github.com/warubert/rst/releases/latest/download/rst_arm64.deb) | [rst_arm64.deb.asc](https://github.com/warubert/rst/releases/latest/download/rst_arm64.deb.asc) | [rst_arm64.tar.gz](https://github.com/warubert/rst/releases/latest/download/rst_arm64.tar.gz) |
-| i386 (32 bits) | [rst_i386.deb](https://github.com/warubert/rst/releases/latest/download/rst_i386.deb) | [rst_i386.deb.asc](https://github.com/warubert/rst/releases/latest/download/rst_i386.deb.asc) | [rst_i386.tar.gz](https://github.com/warubert/rst/releases/latest/download/rst_i386.tar.gz) |
+| Plataforma    | Arquitetura               | ZIP portátil                                                                                        | Instalador                              | Pacote Debian                                                                           | Assinatura GPG                                                                                  | Pacote compactado                                                                             |
+| ------------- | ------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Windows       | x64 (64 bits)             | [rst_windows_x64.zip](https://github.com/warubert/rst/releases/latest/download/rst_windows_x64.zip) | [rst_windows_x64.msi](https://github.com/warubert/rst/releases/latest/download/rst_windows_x64.msi) | —                                                                                       | —                                                                                               | —                                                                                             |
+| Windows       | x86 (32 bits)             | [rst_windows_x86.zip](https://github.com/warubert/rst/releases/latest/download/rst_windows_x86.zip) | [rst_windows_x86.msi](https://github.com/warubert/rst/releases/latest/download/rst_windows_x86.msi) | —                                                                                       | —                                                                                               | —                                                                                             |
+| macOS         | arm64 (Apple Silicon)     | [rst_macos_arm64.zip](https://github.com/warubert/rst/releases/latest/download/rst_macos_arm64.zip) | [rst_macos_arm64.pkg](https://github.com/warubert/rst/releases/latest/download/rst_macos_arm64.pkg) | —                                                                                       | —                                                                                               | —                                                                                             |
+| macOS         | x64 (Intel)               | [rst_macos_x64.zip](https://github.com/warubert/rst/releases/latest/download/rst_macos_x64.zip)     | [rst_macos_x64.pkg](https://github.com/warubert/rst/releases/latest/download/rst_macos_x64.pkg) | —                                                                                       | —                                                                                               | —                                                                                             |
+| Debian/Ubuntu | amd64                     | —                                                                                                   | —                                       | [rst_amd64.deb](https://github.com/warubert/rst/releases/latest/download/rst_amd64.deb) | [rst_amd64.deb.asc](https://github.com/warubert/rst/releases/latest/download/rst_amd64.deb.asc) | [rst_amd64.tar.gz](https://github.com/warubert/rst/releases/latest/download/rst_amd64.tar.gz) |
+| Debian/Ubuntu | arm64                     | —                                                                                                   | —                                       | [rst_arm64.deb](https://github.com/warubert/rst/releases/latest/download/rst_arm64.deb) | [rst_arm64.deb.asc](https://github.com/warubert/rst/releases/latest/download/rst_arm64.deb.asc) | [rst_arm64.tar.gz](https://github.com/warubert/rst/releases/latest/download/rst_arm64.tar.gz) |
+| Debian/Ubuntu | i386 (32 bits)            | —                                                                                                   | —                                       | [rst_i386.deb](https://github.com/warubert/rst/releases/latest/download/rst_i386.deb)   | [rst_i386.deb.asc](https://github.com/warubert/rst/releases/latest/download/rst_i386.deb.asc)   | [rst_i386.tar.gz](https://github.com/warubert/rst/releases/latest/download/rst_i386.tar.gz)   |
+
+O ZIP contém o executável, este README e a licença; basta extrair e executar `rst.exe`. O MSI instala o RST em `Program Files` e adiciona a pasta ao `PATH` do sistema; requer privilégios de administrador.
+
+No macOS, o ZIP contém o executável `rst` e o `.pkg` o instala em `/usr/local/bin`. Os pacotes macOS são publicados sem assinatura; o Gatekeeper pode exibir um aviso. Para evitar esse aviso, é necessário assinar e notarizar com uma conta Apple Developer.
 
 Os links apontam para os arquivos da release mais recente. Para baixar versões anteriores, consulte [todas as releases](https://github.com/warubert/rst/releases).
 
-O workflow do GitHub Actions executa formatação, Clippy e testes em amd64 e arm64, e compila os testes i386 sem executá-los no runner de 64 bits. Ao enviar uma tag `vX.Y.Z` igual à versão do `Cargo.toml`, ele cria pacotes `.deb` para amd64, arm64 e i386, publica os arquivos e assinaturas em uma GitHub Release e atualiza os índices do repositório APT assinado no GitHub Pages. O pacote i386 é de 32 bits; em um Ubuntu amd64, é necessário habilitar a arquitetura i386 no APT para instalá-lo.
+O workflow do GitHub Actions executa formatação, Clippy e testes em amd64 e arm64, compila os testes i386 sem executá-los no runner de 64 bits e valida builds Windows x64/x86 e macOS Intel/Apple Silicon. Ao enviar uma tag `vX.Y.Z` igual à versão do `Cargo.toml`, ele cria pacotes `.deb` para amd64, arm64 e i386, ZIPs e instaladores MSI para Windows x64/x86, e ZIPs e instaladores `.pkg` para macOS Intel/arm64. Os arquivos são publicados em uma GitHub Release e os índices do repositório APT assinado são atualizados no GitHub Pages. O pacote i386 é de 32 bits; em um Ubuntu amd64, é necessário habilitar a arquitetura i386 no APT para instalá-lo.
 
 adicionar o repositório:
 
@@ -187,5 +195,4 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 
 ### Em desenvolvimento
 
-- repo ubuntu e deb
-- compilar executavel para diversas arquiteturas
+- melhorar readme e traduzir para en e es

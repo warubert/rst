@@ -1,0 +1,6 @@
+rst (1.0.0-1) unstable; urgency=medium
+
+  * Initial Debian source packaging for the RST terminal application.
+  * Build offline from the locked and vendored Cargo dependencies.
+
+ -- William Antunes Rubert <william.rubert@gmail.com>  Mon, 26 Oct 2026 14:28:38 -0300

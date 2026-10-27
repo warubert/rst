@@ -1,0 +1,919 @@
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::mem;
+
+use granit_parser::ScalarStyle;
+
+use super::error::Error;
+#[cfg(feature = "properties")]
+use super::events::PropertyInterpolation;
+use super::events::{Ev, Events, ReplayEvents, with_deferred_recursive_aliases};
+use super::options::{DuplicateKeyPolicy, MergeKeyPolicy};
+use super::tags::SfTag;
+use crate::location::Location;
+use crate::parse_scalars::{parse_int_signed, parse_int_unsigned, scalar_is_null};
+use crate::tag::simple_enum_variant_name;
+
+pub(super) fn simple_tagged_enum_name(
+    raw_tag: &Option<Cow<'_, str>>,
+    tag: &SfTag,
+) -> Option<String> {
+    if !matches!(tag, SfTag::Other) {
+        return None;
+    }
+
+    simple_enum_variant_name(raw_tag.as_deref()?).map(ToOwned::to_owned)
+}
+
+/// Canonical tag identity used by [`KeyFingerprint`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum CanonicalKeyTag<'a> {
+    /// A tag whose meaning is represented by `SfTag`.
+    Semantic(SfTag),
+    /// A custom tag, stored in its parser-resolved spelling.
+    Custom(Cow<'a, str>),
+}
+
+/// Canonical fingerprint of a YAML node for duplicate-key detection.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
+pub(super) enum KeyFingerprint<'a> {
+    /// A buffered recursive reference retains its anchor identity.
+    RecursiveAlias { anchor: usize },
+    /// Parsed integer identity, independent of spelling. Zero is never negative.
+    Integer { negative: bool, magnitude: u128 },
+    /// Scalar fingerprint (value plus tag identity).
+    Scalar {
+        value: Cow<'a, str>,
+        tag: CanonicalKeyTag<'a>,
+    },
+    /// Sequence fingerprint (root tag plus ordered fingerprints of children).
+    Sequence {
+        tag: CanonicalKeyTag<'a>,
+        elements: Vec<KeyFingerprint<'a>>,
+    },
+    /// Mapping fingerprint (root tag plus ordered `(key, value)` fingerprints).
+    Mapping {
+        tag: CanonicalKeyTag<'a>,
+        entries: Vec<(KeyFingerprint<'a>, KeyFingerprint<'a>)>,
+    },
+    /// Should not be used, arises after taking the value away
+    #[default]
+    Default,
+}
+
+impl KeyFingerprint<'_> {
+    /// Whether integer equality can differ from the spelling delivered to Serde.
+    pub(super) fn contains_integer(&self) -> bool {
+        match self {
+            Self::Integer { .. } => true,
+            Self::Sequence { elements, .. } => elements.iter().any(Self::contains_integer),
+            Self::Mapping { entries, .. } => entries
+                .iter()
+                .any(|(key, value)| key.contains_integer() || value.contains_integer()),
+            Self::Scalar { .. } | Self::RecursiveAlias { .. } | Self::Default => false,
+        }
+    }
+}
+
+fn canonical_node_key_tag<'a>(
+    tag: SfTag,
+    raw_tag: &Option<Cow<'a, str>>,
+    implicit_tag: SfTag,
+) -> CanonicalKeyTag<'a> {
+    // `raw_tag` contains the parser-resolved tag identity. Keep it for tags
+    // collapsed into `Other`, and for local `!map`, which is deliberately
+    // distinct from the resolved core map tag in typed enum contexts.
+    if (tag == SfTag::Other
+        || (implicit_tag == SfTag::Map && tag == SfTag::Map && raw_tag.as_deref() == Some("!map")))
+        && let Some(raw_tag) = raw_tag
+    {
+        return CanonicalKeyTag::Custom(raw_tag.clone());
+    }
+
+    let tag = if matches!(tag, SfTag::None | SfTag::NonSpecific) {
+        implicit_tag
+    } else if implicit_tag == SfTag::String && tag.can_parse_into_string() {
+        SfTag::String
+    } else {
+        tag
+    };
+    CanonicalKeyTag::Semantic(tag)
+}
+
+pub(super) fn canonical_scalar_key_tag<'a>(
+    tag: SfTag,
+    raw_tag: &Option<Cow<'a, str>>,
+) -> CanonicalKeyTag<'a> {
+    canonical_node_key_tag(tag, raw_tag, SfTag::String)
+}
+
+fn integer_key_fingerprint(
+    value: &str,
+    tag: SfTag,
+    style: ScalarStyle,
+    legacy_octal_numbers: bool,
+) -> Option<KeyFingerprint<'static>> {
+    if tag != SfTag::Int && !(tag == SfTag::None && style == ScalarStyle::Plain) {
+        return None;
+    }
+
+    let value = value.trim();
+    let (negative, magnitude) = if value.starts_with('-') {
+        let parsed =
+            parse_int_signed::<i128>(value, "i128", Location::UNKNOWN, legacy_octal_numbers)
+                .ok()?;
+        (parsed < 0, parsed.unsigned_abs())
+    } else {
+        let parsed =
+            parse_int_unsigned::<u128>(value, "u128", Location::UNKNOWN, legacy_octal_numbers)
+                .ok()?;
+        (false, parsed)
+    };
+    Some(KeyFingerprint::Integer {
+        negative,
+        magnitude,
+    })
+}
+
+pub(super) fn is_empty_mapping_key_fingerprint(fingerprint: &KeyFingerprint<'_>) -> bool {
+    matches!(
+        fingerprint,
+        KeyFingerprint::Mapping {
+            tag: CanonicalKeyTag::Semantic(SfTag::Map),
+            entries,
+        } if entries.is_empty()
+    )
+}
+
+/// `from_slice_multiple` captured YAML node used to buffer keys/values and process merge keys.
+///
+/// Fields:
+/// - `fingerprint`: canonical representation for duplicate detection.
+/// - `events`: exact event slice that replays the node on demand.
+/// - `location`: start location of the node (for diagnostics).
+///
+/// Comments are not part of `KeyNode`; callers that buffer a node and later
+/// replay it must capture any relevant comment metadata alongside the node.
+pub(super) enum KeyNode<'a> {
+    Fingerprinted {
+        fingerprint: KeyFingerprint<'a>,
+        events: Vec<Ev<'a>>,
+        location: Location,
+    },
+    Scalar {
+        events: Vec<Ev<'a>>,
+        location: Location,
+    },
+}
+
+impl<'a> KeyNode<'a> {
+    /// Original scalar text for diagnostics, independent of the comparison fingerprint.
+    pub(super) fn stringy_scalar_value(&self) -> Option<&str> {
+        match self.events() {
+            [Ev::Scalar { value, tag, .. }] if tag.can_parse_into_string() => Some(value),
+            _ => None,
+        }
+    }
+
+    pub(super) fn fingerprint(&self) -> Cow<'_, KeyFingerprint<'a>> {
+        match self {
+            KeyNode::Fingerprinted { fingerprint, .. } => Cow::Borrowed(fingerprint),
+            KeyNode::Scalar { events, .. } => {
+                if let Some(Ev::Scalar {
+                    tag,
+                    raw_tag,
+                    value,
+                    style,
+                    ..
+                }) = events.first()
+                {
+                    // Resolve implicit nulls before normalizing string-like tags. The
+                    // recorded scalar keeps its original text and style for replay.
+                    let tag = if *tag == SfTag::None && scalar_is_null(tag, value, style) {
+                        SfTag::Null
+                    } else {
+                        *tag
+                    };
+                    Cow::Owned(KeyFingerprint::Scalar {
+                        tag: canonical_scalar_key_tag(tag, raw_tag),
+                        value: value.clone(),
+                    })
+                } else {
+                    unreachable!()
+                }
+            }
+        }
+    }
+
+    pub(super) fn events(&self) -> &[Ev<'a>] {
+        match self {
+            KeyNode::Fingerprinted { events, .. } | KeyNode::Scalar { events, .. } => events,
+        }
+    }
+
+    pub(super) fn take_events(&mut self) -> Vec<Ev<'a>> {
+        match self {
+            KeyNode::Fingerprinted { events, .. } | KeyNode::Scalar { events, .. } => {
+                mem::take(events)
+            }
+        }
+    }
+
+    pub(super) fn take_fingerprint(&mut self) -> KeyFingerprint<'a> {
+        match self {
+            KeyNode::Fingerprinted { fingerprint, .. } => mem::take(fingerprint),
+            KeyNode::Scalar { .. } => self.fingerprint().into_owned(),
+        }
+    }
+
+    pub(super) fn location(&self) -> Location {
+        let location = match self {
+            KeyNode::Fingerprinted { location, .. } | KeyNode::Scalar { location, .. } => location,
+        };
+        *location
+    }
+}
+
+/// `from_slice_multiple` pending key/value pair to be injected into the current mapping.
+///
+/// Produced by:
+/// - Merge (`<<`) processing and by scanning the current mapping fields.
+pub(super) struct PendingEntry<'a> {
+    pub(super) key: KeyNode<'a>,
+    pub(super) value: KeyNode<'a>,
+    /// Where the key/value pair is referenced/used in YAML.
+    ///
+    /// For merge-derived entries, this is the `<<` entry location.
+    pub(super) reference_location: Location,
+    /// Comments that visually belong to this key/value field.
+    ///
+    /// For replayed entries these are comments captured at the use site while
+    /// scanning the containing map. Definition-site comments inside an anchored
+    /// mapping are not reconstructed from the recorded event buffer.
+    pub(super) field_comments: Vec<Cow<'a, str>>,
+    /// Same-line comments after the key/value separator.
+    pub(super) value_separator_comments: Vec<Cow<'a, str>>,
+    /// Comments immediately above the value node.
+    pub(super) value_comments: Vec<Cow<'a, str>>,
+}
+
+/// Capture a complete node (scalar/sequence/mapping) from an `Events` source,
+/// returning both a fingerprint (for duplicate checks) and a replayable buffer.
+/// This is recursive function.
+///
+/// This records only `Ev` values. Since `Ev` does not carry comments, callers
+/// must claim comment hooks before capture when comments should survive later
+/// replay.
+///
+/// Arguments:
+/// - `ev`: event source supporting lookahead and consumption.
+///
+/// Returns:
+/// - `Ok(KeyNode)` describing the captured subtree.
+/// - `Err(Error)` on structural errors or EOF.
+///
+/// Called by:
+/// - Mapping deserialization to stage keys and values, and by merge processing.
+pub(super) fn capture_node<'a>(ev: &mut dyn Events<'a>) -> Result<KeyNode<'a>, Error> {
+    capture_node_with_legacy_octal(ev, false)
+}
+
+/// Capture a node using the configured integer syntax for key comparisons.
+pub(super) fn capture_node_with_legacy_octal<'a>(
+    ev: &mut dyn Events<'a>,
+    legacy_octal_numbers: bool,
+) -> Result<KeyNode<'a>, Error> {
+    with_deferred_recursive_aliases(ev, |ev| capture_node_inner(ev, legacy_octal_numbers))
+}
+
+fn capture_node_inner<'a>(
+    ev: &mut dyn Events<'a>,
+    legacy_octal_numbers: bool,
+) -> Result<KeyNode<'a>, Error> {
+    let Some(event) = ev.next()? else {
+        return Err(Error::eof().with_location(ev.last_location()));
+    };
+
+    match event {
+        Ev::RecursiveAlias { anchor, location } => Ok(KeyNode::Fingerprinted {
+            fingerprint: KeyFingerprint::RecursiveAlias { anchor },
+            events: vec![event],
+            location,
+        }),
+        Ev::Scalar {
+            value,
+            tag,
+            raw_tag,
+            style,
+            anchor,
+            location,
+        } => {
+            let integer_fingerprint =
+                integer_key_fingerprint(&value, tag, style, legacy_octal_numbers);
+            let scalar_ev = Ev::Scalar {
+                value,
+                tag,
+                raw_tag,
+                style,
+                anchor,
+                location,
+            };
+            if let Some(fingerprint) = integer_fingerprint {
+                return Ok(KeyNode::Fingerprinted {
+                    fingerprint,
+                    events: vec![scalar_ev],
+                    location,
+                });
+            }
+            Ok(KeyNode::Scalar {
+                events: vec![scalar_ev],
+                location,
+            })
+        }
+        Ev::SeqStart {
+            anchor,
+            tag,
+            raw_tag,
+            location,
+        } => {
+            let fingerprint_tag = canonical_node_key_tag(tag, &raw_tag, SfTag::Seq);
+            let mut events = vec![Ev::SeqStart {
+                anchor,
+                tag,
+                raw_tag,
+                location,
+            }];
+            let mut elements = Vec::new();
+            loop {
+                match ev.peek()? {
+                    Some(Ev::SeqEnd { location: end_loc }) => {
+                        let end_loc = *end_loc;
+                        let _ = ev.next()?;
+                        events.push(Ev::SeqEnd { location: end_loc });
+                        break;
+                    }
+                    Some(_) => {
+                        let mut child = capture_node_inner(ev, legacy_octal_numbers)?;
+                        let fp = child.take_fingerprint();
+                        let child_events = child.take_events();
+                        elements.push(fp);
+                        events.reserve(child_events.len());
+                        events.extend(child_events);
+                    }
+                    None => {
+                        return Err(Error::eof().with_location(ev.last_location()));
+                    }
+                }
+            }
+            Ok(KeyNode::Fingerprinted {
+                fingerprint: KeyFingerprint::Sequence {
+                    tag: fingerprint_tag,
+                    elements,
+                },
+                events,
+                location,
+            })
+        }
+        Ev::MapStart {
+            anchor,
+            tag,
+            raw_tag,
+            location,
+        } => {
+            let fingerprint_tag = canonical_node_key_tag(tag, &raw_tag, SfTag::Map);
+            let mut events = vec![Ev::MapStart {
+                anchor,
+                tag,
+                raw_tag,
+                location,
+            }];
+            let mut entries = Vec::new();
+            loop {
+                match ev.peek()? {
+                    Some(Ev::MapEnd { location: end_loc }) => {
+                        let end_loc = *end_loc;
+                        let _ = ev.next()?;
+                        events.push(Ev::MapEnd { location: end_loc });
+                        break;
+                    }
+                    Some(_) => {
+                        let mut key = capture_node_inner(ev, legacy_octal_numbers)?;
+                        let key_fp = key.take_fingerprint();
+                        let mut value = capture_node_inner(ev, legacy_octal_numbers)?;
+                        let value_fp = value.take_fingerprint();
+                        entries.push((key_fp, value_fp));
+                        let key_events = key.take_events();
+                        let value_events = value.take_events();
+                        events.reserve(key_events.len() + value_events.len());
+                        events.extend(key_events);
+                        events.extend(value_events);
+                    }
+                    None => {
+                        return Err(Error::eof().with_location(ev.last_location()));
+                    }
+                }
+            }
+            Ok(KeyNode::Fingerprinted {
+                fingerprint: KeyFingerprint::Mapping {
+                    tag: fingerprint_tag,
+                    entries,
+                },
+                events,
+                location,
+            })
+        }
+        Ev::SeqEnd { location } | Ev::MapEnd { location } => {
+            Err(Error::UnexpectedContainerEndWhileReadingKeyNode { location })
+        }
+        Ev::Taken { location } => Err(Error::unexpected("consumed event").with_location(location)),
+    }
+}
+
+/// Return the simple YAML tag name for a node that can act as an enum variant selector.
+pub(super) fn simple_tagged_node_name(event: &Ev<'_>) -> Option<(String, Location)> {
+    match event {
+        Ev::Scalar {
+            tag,
+            raw_tag,
+            location,
+            ..
+        }
+        | Ev::SeqStart {
+            tag,
+            raw_tag,
+            location,
+            ..
+        }
+        | Ev::MapStart {
+            tag,
+            raw_tag,
+            location,
+            ..
+        } => simple_tagged_enum_name(raw_tag, tag).map(|name| (name, *location)),
+        _ => None,
+    }
+}
+
+/// Remove the YAML tag from the payload node after it has been promoted to a map key.
+pub(super) fn strip_root_tag_for_externally_tagged_payload(events: &mut [Ev<'_>]) {
+    if let Some(event) = events.first_mut() {
+        let _ = event.strip_node_tag();
+    }
+}
+
+/// Encode a YAML tag-selected enum variant as the Serde externally-tagged map form.
+///
+/// Arguments:
+/// - `variant`: enum variant name extracted from the YAML tag, for example `Expression`.
+/// - `tag_location`: source location of the tagged YAML node.
+/// - `payload_events`: captured events for the YAML node after the root tag was stripped.
+///
+/// Returns:
+/// - A synthetic one-entry mapping equivalent to `{ Variant: payload }`.
+pub(super) fn externally_tagged_payload_as_map_events(
+    variant: String,
+    tag_location: Location,
+    mut payload_events: Vec<Ev<'_>>,
+) -> Vec<Ev<'_>> {
+    let end_location = payload_events.last().map_or(tag_location, Ev::location);
+
+    let mut events = Vec::with_capacity(payload_events.len() + 3);
+    events.push(Ev::MapStart {
+        anchor: 0,
+        tag: SfTag::None,
+        raw_tag: None,
+        location: tag_location,
+    });
+    events.push(Ev::Scalar {
+        value: Cow::Owned(variant),
+        tag: SfTag::String,
+        raw_tag: None,
+        style: ScalarStyle::Plain,
+        anchor: 0,
+        location: tag_location,
+    });
+    events.append(&mut payload_events);
+    events.push(Ev::MapEnd {
+        location: end_location,
+    });
+    events
+}
+
+/// Capture `!Variant payload` as a synthetic `{ Variant: payload }` event buffer.
+pub(super) fn capture_simple_tagged_node_as_map_events<'a>(
+    ev: &mut dyn Events<'a>,
+) -> Result<Option<Vec<Ev<'a>>>, Error> {
+    let Some((variant, tag_location)) = ev.peek()?.and_then(|event| simple_tagged_node_name(event))
+    else {
+        return Ok(None);
+    };
+
+    let mut payload_node = capture_node(ev)?;
+    let mut payload_events = payload_node.take_events();
+    strip_root_tag_for_externally_tagged_payload(&mut payload_events);
+
+    Ok(Some(externally_tagged_payload_as_map_events(
+        variant,
+        tag_location,
+        payload_events,
+    )))
+}
+
+/// True if `node` is a YAML merge key.
+///
+/// This accepts both the implicitly resolved untagged plain `<<` spelling and
+/// the explicit YAML 1.1 `tag:yaml.org,2002:merge` scalar (`!!merge`).
+///
+/// Used by:
+/// - Mapping deserialization to trigger merge value expansion.
+#[inline]
+pub(super) fn is_merge_key(node: &KeyNode) -> bool {
+    let events = node.events();
+    if events.len() != 1 {
+        return false;
+    }
+    events.first().is_some_and(is_merge_key_event)
+}
+
+#[inline]
+pub(super) fn is_merge_key_event(event: &Ev<'_>) -> bool {
+    if let Ev::Scalar {
+        value, tag, style, ..
+    } = event
+    {
+        value.as_ref() == "<<"
+            && (*tag == SfTag::Merge || *tag == SfTag::None && matches!(style, ScalarStyle::Plain))
+    } else {
+        false
+    }
+}
+
+pub(super) fn validate_no_merge_keys_in_node_events(events: &[Ev<'_>]) -> Result<(), Error> {
+    fn eof_location(events: &[Ev<'_>]) -> Location {
+        events.last().map_or(Location::UNKNOWN, Ev::location)
+    }
+
+    fn visit_node(events: &[Ev<'_>], mut index: usize) -> Result<usize, Error> {
+        match events.get(index) {
+            Some(Ev::Scalar { .. } | Ev::RecursiveAlias { .. }) => Ok(index + 1),
+            Some(Ev::SeqStart { .. }) => {
+                index += 1;
+                loop {
+                    match events.get(index) {
+                        Some(Ev::SeqEnd { .. }) => return Ok(index + 1),
+                        Some(Ev::MapEnd { location }) => {
+                            return Err(Error::UnexpectedContainerEndWhileSkippingNode {
+                                location: *location,
+                            });
+                        }
+                        Some(_) => index = visit_node(events, index)?,
+                        None => return Err(Error::eof().with_location(eof_location(events))),
+                    }
+                }
+            }
+            Some(Ev::MapStart { .. }) => {
+                index += 1;
+                loop {
+                    match events.get(index) {
+                        Some(Ev::MapEnd { .. }) => return Ok(index + 1),
+                        Some(Ev::SeqEnd { location }) => {
+                            return Err(Error::UnexpectedContainerEndWhileSkippingNode {
+                                location: *location,
+                            });
+                        }
+                        Some(event) => {
+                            if is_merge_key_event(event) {
+                                return Err(Error::MergeKeyNotAllowed {
+                                    location: event.location(),
+                                });
+                            }
+                            index = visit_node(events, index)?;
+                            index = visit_node(events, index)?;
+                        }
+                        None => return Err(Error::eof().with_location(eof_location(events))),
+                    }
+                }
+            }
+            Some(Ev::SeqEnd { location } | Ev::MapEnd { location }) => {
+                Err(Error::UnexpectedContainerEndWhileSkippingNode {
+                    location: *location,
+                })
+            }
+            Some(Ev::Taken { location }) => {
+                Err(Error::unexpected("consumed event").with_location(*location))
+            }
+            None => Err(Error::eof().with_location(eof_location(events))),
+        }
+    }
+
+    let next = visit_node(events, 0)?;
+    if next == events.len() {
+        Ok(())
+    } else {
+        Err(Error::unexpected("single YAML node").with_location(events[next].location()))
+    }
+}
+
+pub(super) fn apply_duplicate_key_policy_to_entries(
+    mut entries: Vec<PendingEntry<'_>>,
+    duplicate_keys: DuplicateKeyPolicy,
+    merge_keys: MergeKeyPolicy,
+) -> Result<Vec<PendingEntry<'_>>, Error> {
+    let last_wins = matches!(duplicate_keys, DuplicateKeyPolicy::LastWins);
+    if last_wins {
+        entries.reverse();
+    }
+
+    let mut seen = HashSet::with_capacity(entries.len());
+    let mut kept = Vec::with_capacity(entries.len());
+
+    for entry in entries {
+        if seen.insert(entry.key.fingerprint().into_owned()) {
+            kept.push(entry);
+            continue;
+        }
+
+        if matches!(duplicate_keys, DuplicateKeyPolicy::Error) {
+            let key = entry.key.stringy_scalar_value().map(ToOwned::to_owned);
+            return Err(Error::DuplicateMappingKey {
+                key,
+                location: entry.key.location(),
+            });
+        }
+
+        if matches!(merge_keys, MergeKeyPolicy::Error) {
+            validate_no_merge_keys_in_node_events(entry.value.events())?;
+        }
+    }
+
+    if last_wins {
+        kept.reverse();
+    }
+
+    Ok(kept)
+}
+
+/// Expand a merge value node into a queue of `PendingEntry`s in correct order.
+///
+/// Arguments:
+/// - `events`: recorded events that make up the merge value (mapping or sequence of mappings).
+/// - `location`: start location of the merge value (for diagnostics).
+///
+/// Returns:
+/// - `Ok(Vec<PendingEntry>)` entries to be enqueued into the current map in merge order.
+/// - `Err(Error)` if the merge value is not a mapping/sequence-of-mappings.
+///
+/// Called by:
+/// - Mapping deserialization when encountering `<<: value`.
+pub(super) fn pending_entries_from_events(
+    events: Vec<Ev<'_>>,
+    location: Location,
+    reference_location: Location,
+    merge_keys: MergeKeyPolicy,
+    duplicate_keys: DuplicateKeyPolicy,
+    legacy_octal_numbers: bool,
+    #[cfg(feature = "properties")] property_interpolation: PropertyInterpolation,
+) -> Result<Vec<PendingEntry<'_>>, Error> {
+    let mut replay = ReplayEvents::with_reference(
+        events,
+        reference_location,
+        #[cfg(feature = "properties")]
+        property_interpolation.clone(),
+    );
+    match replay.peek()? {
+        Some(Ev::Scalar {
+            value, tag, style, ..
+        }) if scalar_is_null(tag, value, style) => Ok(Vec::new()),
+        Some(Ev::Scalar { location, .. }) => Err(Error::MergeValueNotMapOrSeqOfMaps {
+            location: *location,
+        }),
+        Some(Ev::MapStart { .. }) => collect_entries_from_map(
+            &mut replay,
+            reference_location,
+            merge_keys,
+            duplicate_keys,
+            legacy_octal_numbers,
+        ),
+        Some(Ev::SeqStart { .. }) => {
+            let mut batches = Vec::new();
+            let _ = replay.next()?; // consume SeqStart
+            loop {
+                match replay.peek()? {
+                    Some(Ev::SeqEnd { .. }) => {
+                        let _ = replay.next()?;
+                        break;
+                    }
+                    Some(_) => {
+                        // Preserve per-element use-site location. If the element comes from alias
+                        // replay (`*m1`), its events are definition-site, but `referenced` should
+                        // point at the alias token.
+                        let _ = replay.peek()?;
+                        let element_ref_loc = replay.reference_location();
+                        let mut element =
+                            capture_node_with_legacy_octal(&mut replay, legacy_octal_numbers)?;
+                        batches.push(pending_entries_from_events(
+                            element.take_events(),
+                            element.location(),
+                            element_ref_loc,
+                            merge_keys,
+                            duplicate_keys,
+                            legacy_octal_numbers,
+                            #[cfg(feature = "properties")]
+                            property_interpolation.clone(),
+                        )?); // recursive
+                    }
+                    None => {
+                        return Err(Error::eof().with_location(replay.last_location()));
+                    }
+                }
+            }
+
+            let mut merged = Vec::new();
+            for mut nested in batches {
+                merged.append(&mut nested);
+            }
+            Ok(merged)
+        }
+        Some(other) => Err(Error::MergeValueNotMapOrSeqOfMaps {
+            location: other.location(),
+        }),
+        None => Err(Error::eof().with_location(location)),
+    }
+}
+
+/// Expand a merge value node directly from a live `Events` source.
+///
+/// This is used for `<<: value` handling in streaming map deserialization. Unlike
+/// `pending_entries_from_events` (which works over a pre-recorded buffer), this
+/// function can preserve per-element use-site locations for sequence merges like:
+///
+/// ```yaml
+/// <<: [*m1, *m2]
+/// ```
+///
+/// because `Events::reference_location()` can still observe the alias token
+/// locations while the replay injection frame is active.
+pub(super) fn pending_entries_from_live_events<'a>(
+    ev: &mut dyn Events<'a>,
+    merge_reference_location: Location,
+    merge_keys: MergeKeyPolicy,
+    duplicate_keys: DuplicateKeyPolicy,
+    legacy_octal_numbers: bool,
+) -> Result<Vec<PendingEntry<'a>>, Error> {
+    #[cfg(feature = "properties")]
+    let property_interpolation = ev.property_interpolation().clone();
+    match ev.peek()? {
+        Some(event @ Ev::RecursiveAlias { .. }) => {
+            // A supported recursive merge is the same empty placeholder as on the live
+            // typed path. Validate it even when the enclosing collector defers aliases.
+            event.clone().resolve_recursive_alias()?;
+            let _ = ev.next()?;
+            Ok(Vec::new())
+        }
+        Some(Ev::Scalar {
+            value, tag, style, ..
+        }) if scalar_is_null(tag, value, style) => {
+            let _ = ev.next()?;
+            Ok(Vec::new())
+        }
+        Some(Ev::Scalar { location, .. }) => Err(Error::MergeValueNotMapOrSeqOfMaps {
+            location: *location,
+        }),
+        Some(Ev::MapStart { .. }) => {
+            let mut node = capture_node_with_legacy_octal(ev, legacy_octal_numbers)?;
+            pending_entries_from_events(
+                node.take_events(),
+                node.location(),
+                merge_reference_location,
+                merge_keys,
+                duplicate_keys,
+                legacy_octal_numbers,
+                #[cfg(feature = "properties")]
+                property_interpolation,
+            )
+        }
+        Some(Ev::SeqStart { .. }) => {
+            let _ = ev.next()?; // consume SeqStart
+            let mut batches = Vec::new();
+            loop {
+                match ev.peek()? {
+                    Some(Ev::SeqEnd { .. }) => {
+                        let _ = ev.next()?;
+                        break;
+                    }
+                    Some(_) => {
+                        let _ = ev.peek()?;
+                        let element_ref_loc = ev.reference_location();
+                        let mut element = capture_node_with_legacy_octal(ev, legacy_octal_numbers)?;
+                        batches.push(pending_entries_from_events(
+                            element.take_events(),
+                            element.location(),
+                            element_ref_loc,
+                            merge_keys,
+                            duplicate_keys,
+                            legacy_octal_numbers,
+                            #[cfg(feature = "properties")]
+                            property_interpolation.clone(),
+                        )?);
+                    }
+                    None => return Err(Error::eof().with_location(ev.last_location())),
+                }
+            }
+            let mut merged = Vec::new();
+            for mut nested in batches {
+                merged.append(&mut nested);
+            }
+            Ok(merged)
+        }
+        Some(other) => Err(Error::MergeValueNotMapOrSeqOfMaps {
+            location: other.location(),
+        }),
+        None => Err(Error::eof().with_location(ev.last_location())),
+    }
+}
+
+/// Collect `(key,value)` entries from a mapping at the current position.
+///
+/// Arguments:
+/// - `ev`: event source currently positioned at `MapStart`.
+///
+/// Returns:
+/// - All entries from that mapping, with any nested merges expanded in-order.
+///
+/// Called by:
+/// - Merge expansion (`pending_entries_from_events`) and map scanning.
+pub(super) fn collect_entries_from_map<'a>(
+    ev: &mut dyn Events<'a>,
+    reference_location: Location,
+    merge_keys: MergeKeyPolicy,
+    duplicate_keys: DuplicateKeyPolicy,
+    legacy_octal_numbers: bool,
+) -> Result<Vec<PendingEntry<'a>>, Error> {
+    let Some(Ev::MapStart { .. }) = ev.next()? else {
+        return Err(Error::MergeValueNotMapOrSeqOfMaps {
+            location: ev.last_location(),
+        });
+    };
+
+    let mut fields = Vec::new();
+    let mut merges = Vec::new();
+
+    loop {
+        match ev.peek()? {
+            Some(Ev::MapEnd { .. }) => {
+                let _ = ev.next()?;
+                break;
+            }
+            Some(_) => {
+                let key_comments = ev.take_leading_comments_for_next_node()?;
+                let key = capture_node_with_legacy_octal(ev, legacy_octal_numbers)?;
+                if is_merge_key(&key) {
+                    match merge_keys {
+                        MergeKeyPolicy::Merge => {
+                            // Preserve where the merge value is referenced (use-site). For alias
+                            // merges inside merged mappings, node locations point at the anchored
+                            // mapping, but we want `referenced` to point at the alias token.
+                            let _ = ev.peek()?;
+                            let merge_ref_loc = ev.reference_location();
+                            merges.push(pending_entries_from_live_events(
+                                ev,
+                                merge_ref_loc,
+                                merge_keys,
+                                duplicate_keys,
+                                legacy_octal_numbers,
+                            )?);
+                            continue;
+                        }
+                        MergeKeyPolicy::AsOrdinary => {}
+                        MergeKeyPolicy::Error => {
+                            return Err(Error::MergeKeyNotAllowed {
+                                location: key.location(),
+                            });
+                        }
+                    }
+                }
+                let field_comments = key_comments;
+                let value_separator_comments = ev.take_separator_comments_before_mapping_value()?;
+                let value_comments = ev.take_leading_comments_for_next_node()?;
+                let value = capture_node_with_legacy_octal(ev, legacy_octal_numbers)?;
+                fields.push(PendingEntry {
+                    key,
+                    value,
+                    reference_location,
+                    field_comments,
+                    value_separator_comments,
+                    value_comments,
+                });
+            }
+            None => {
+                return Err(Error::eof().with_location(ev.last_location()));
+            }
+        }
+    }
+
+    let mut entries = apply_duplicate_key_policy_to_entries(fields, duplicate_keys, merge_keys)?;
+    for mut nested in merges {
+        entries.append(&mut nested);
+    }
+    Ok(entries)
+}

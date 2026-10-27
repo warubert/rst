@@ -1,0 +1,97 @@
+# Changelog
+
+## 1.3.0 Maintenance and performance release
+
+### Fixed
+
+- Integer mapping keys now compare by their parsed numeric value for duplicate detection and merge
+  resolution, including inside composite keys (`0xB` and `11` compare equal). Deserializing to strings
+  preserves the original spelling; `FirstWins` and `LastWins` retain the selected key's spelling
+  and associated value.
+- Composite keys containing null-like strings now preserve both the key and its associated value;
+  for example, `{{"null": 1}: 2}` now round-trips correctly.
+- Null mapping keys now remain distinct from null-like string keys during duplicate detection
+  and merge resolution, including inside composite keys.
+- Null detection now respects string tags and scalar styles, preserving null-like strings such as
+  `!!str null`, including when deserializing to `Option<String>`.
+- Explicit numeric tags (`!!int` and `!!float`) now deserialize correctly through `deserialize_any`,
+  including quoted and block scalars.
+- Floating-point deserialization now rejects incompatible core tags; for example,
+  `from_str::<f64>("!!str 1.5")` now returns an error.
+- Serialization now escapes U+FFFE and U+FFFF as `\uFFFE` and `\uFFFF`.
+- Serialization now preserves newline-only strings in literal block scalars, including
+  `LitStr` and `LitString`, by using keep chomping and retaining every empty line.
+- Updated the granit-parser revision to preserve document boundaries after zero-indented root
+  literal and folded block scalars, including empty strings.
+- Preserve string scalars across YAML 1.1 readers (PR #90, thanks @NiklasRosenstein)
+- The version increased to 1.3 because it uses granit-parser 1.3, and that is because granit-parser
+  added two methods to `Input` for performance improvements. As serde-saphyr re-exports it,
+   the version number must be increased to 1.3 as well, even if no new features are added to 
+   this crate itself.
+
+## 1.2.0 Maintenance release
+
+### Changed
+
+- Folded property-interpolation depth and work limits into `Budget`; property resource-limit
+  failures are now reported through `Error::Budget` and `BudgetBreach`.
+- Added the opt-in `Options::reject_unsupported_tags` strict mode. It rejects explicitly tagged
+  scalar, sequence, and mapping nodes when their tag is unknown to serde-saphyr; the default remains
+  permissive for compatibility with custom tagged enums. YAML 1.1 `!!merge` and `!!value` are
+  accepted in this mode only as the exact scalar mapping keys `<<` and `=`, respectively, while
+  robotics-only `!degrees` and `!radians` require both the `robotics` crate feature and
+  `angle_conversions`, and `!include` requires both the `include` crate feature and a configured
+  resolver.
+- Enforced the scalar, sequence, or mapping node kinds required by recognized tags even when
+  `reject_unsupported_tags` is disabled.
+- Hardened serializer indentation handling: `indent_step` is now limited to `1..=64`, all
+  serializer entry points validate it, and indentation arithmetic returns an error instead of
+  overflowing. We do not consider this breaking because values outside this range does not look sane.
+- Validated custom anchor-generator names before emission. Names must be 1–256 bytes and cannot
+  contain whitespace, control characters, or YAML flow punctuation; unsupported names now return
+  a serialization error.
+
+### Fixes
+
+- Avoided unnecessary quotes around string keys and values containing an inline `#`, such as
+  `a#b`, while retaining quotes for leading or whitespace-separated hashes. Borrowed from
+  [commit 1119a54](https://github.com/bourumir-wyngs/serde-saphyr/commit/1119a54cc184d2151d53089f6be1b311b0f57e5a)
+  under the terms of the Apache/MIT licenses. When property interpolation is configured,
+  newly plain values such as `${NAME}#fragment` can interpolate; use `quote_all` to preserve
+  literal values.
+- Recognized explicit YAML 1.1 `!!merge` keys, including verbatim tags and `%TAG`-expanded
+  handles, everywhere implicit `<<` merge keys are supported.
+- Recognized the YAML 1.1 `!!value` tag while intentionally treating it as a no-op annotation.
+- Accepted valid zero-indented root folded block scalars, including `#`-prefixed content lines.
+- Fixed externally tagged `typetag` trait-object deserialization by consuming the closing mapping
+  event when a Serde map visitor returns after its final key/value pair, preventing a false
+  "multiple YAML documents" error.
+- Rejected non-UTF-8 canonical include and root-file paths before resolver policy checks and source
+  identity handling, preventing lossy path collisions and policy bypasses on Unix.
+- Reported alias-use locations as primary for unsupported-tag and budget failures during replay,
+  while retaining the anchor-definition locations as secondary context.
+
+### Testing
+
+- Reviewed yaml test suite, made sure all 350 active IDs and all 402 active cases are represented and documented
+  we use  [YAML Test Suite v2022-01-17](https://github.com/yaml/yaml-test-suite/releases/tag/v2022-01-17).
+- property test with 1,024 generated cases to check the round trip.
+- added tests for [typetag](https://crates.io/crates/typetag).
+
+## 1.1.0 Maintenance release
+
+### Added
+
+- Added granit-parser resource limits to `Budget` (#172):
+  - `max_buffered_comment_events` (default: 32)
+  - `simple_key_max_lookahead` (default: 1,024 characters)
+  - `flow_nesting_limit` (default: 255)
+
+  The limits are applied to parsers created for strings, readers, standalone budget checks, and
+  included YAML sources. When the `serde_derived_types` feature is enabled, deserializing an older
+  `Budget` representation that omits these fields uses the documented defaults.
+
+### Fixes
+
+- Fixed enums tags for struct variants (#177).
+- Improved error message wording (#178).

@@ -1,0 +1,1719 @@
+//! Live events: a streaming view over the YAML input.
+//!
+//! This module implements `LiveEvents`, an Events source that pulls items directly
+//! from the underlying `granit_parser::Parser` as it scans the input string.
+//! Unlike `ReplayEvents`, which iterates over a pre-recorded buffer, live events
+//! are produced on demand and reflect the current position of the parser.
+//!
+//! Responsibilities and behavior:
+//! - Skip parser-level stream/document boundary markers so consumers see only
+//!   logical YAML nodes: container starts/ends, scalars, and aliases.
+//! - Track and record anchors for both scalars and containers. When an alias is
+//!   encountered later, the previously recorded sequence of events for that
+//!   anchor is injected (replayed) back into the stream.
+//! - Enforce alias-bomb hardening via `AliasLimits` and account replayed events
+//!   per anchor and in total. `BudgetEnforcer` can also be attached to limit raw
+//!   event production and retained anchor copies.
+//! - Maintain a single-item lookahead buffer to implement `peek()`, and keep
+//!   `last_location` to improve error reporting.
+//!
+//! `LiveEvents` is single-pass and does not support rewinding. Aliases expand by
+//! injecting previously recorded buffers; normal parsing continues after the
+//! injection is exhausted.
+
+use crate::budget::{BudgetEnforcer, EnforcingPolicy};
+
+#[cfg(not(feature = "include"))]
+use crate::buffered_input::ReaderInput;
+
+#[cfg(feature = "properties")]
+use super::events::PropertyInterpolation;
+use super::events::attach_alias_locations_if_missing;
+use crate::buffered_input::buffered_input_from_reader_with_limit;
+use crate::de::{AliasLimits, Error, Ev, Events, Location, Options};
+use crate::de_error::budget_error;
+#[cfg(feature = "include")]
+use crate::include::create_parser_from_reader_input;
+use crate::include::{BaseParser, create_parser_from_str};
+use crate::location::location_from_span;
+use crate::options::BudgetReportCallback;
+use crate::tags::{SfTag, TagNodeKind};
+use granit_parser::{Event, Placement, ScalarStyle, ScanError, Span, StructureStyle, Tag};
+
+#[cfg(not(feature = "include"))]
+use granit_parser::StrInput;
+use smallvec::SmallVec;
+use std::borrow::Cow;
+#[cfg(feature = "include")]
+use std::rc::Rc;
+
+#[cfg(feature = "include")]
+type StreamParser<'a> = BaseParser<'a>;
+
+#[cfg(not(feature = "include"))]
+type StreamParser<'a> = granit_parser::Parser<'a, ReaderInput<'a>>;
+
+/// This is enough to hold a single scalar, which is a common case in YAML anchors.
+const SMALLVECT_INLINE: usize = 8;
+
+/// A frame that records events for an anchored container until its end.
+/// Uses `SmallVec` to avoid heap allocations for small anchors.
+#[derive(Clone, Debug)]
+struct RecFrame<'a> {
+    id: usize,
+    /// counts nested container starts/ends
+    depth: usize,
+    /// inline up to `SMALLVECT_INLINE` events; spills to heap beyond
+    buf: SmallVec<[Ev<'a>; SMALLVECT_INLINE]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConsumedEventKind {
+    Scalar,
+    SeqStart,
+    SeqEnd,
+    MapStart,
+    MapEnd,
+}
+
+impl ConsumedEventKind {
+    fn can_own_same_line_trailing_comment(self) -> bool {
+        matches!(
+            self,
+            ConsumedEventKind::Scalar | ConsumedEventKind::SeqEnd | ConsumedEventKind::MapEnd
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingTrailingCommentKind {
+    AfterConsumedNode,
+    BeforeUpcomingNode,
+}
+
+#[derive(Debug)]
+struct PendingTrailingComment<'a> {
+    text: Cow<'a, str>,
+    kind: PendingTrailingCommentKind,
+}
+
+/// Position occupied by a complete YAML node relative to its immediate parent.
+///
+/// Strict tag validation uses this distinction because YAML 1.1 `!!merge` and
+/// `!!value` are valid only when the tagged scalar itself is a mapping key. A
+/// scalar nested inside a sequence used as a complex key is therefore [`Self::Other`],
+/// not [`Self::MappingKey`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NodePosition {
+    /// The node is a direct mapping key.
+    MappingKey,
+    /// The node is a direct mapping value.
+    MappingValue,
+    /// The node is a document root or sequence item.
+    Other,
+}
+
+/// Strict-tag structural state for an open collection in the logical event stream.
+///
+/// `parent_position` records the slot occupied by the collection as a whole. That
+/// slot is completed only when the collection ends, so nested events cannot advance
+/// the enclosing mapping's key/value state prematurely.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TagContextFrame {
+    /// An open sequence.
+    Sequence {
+        /// Position of the complete sequence in its enclosing collection.
+        parent_position: NodePosition,
+    },
+    /// An open mapping.
+    Mapping {
+        /// Whether the next direct child begins a key rather than a value.
+        expecting_key: bool,
+        /// Position of the complete mapping in its enclosing collection.
+        parent_position: NodePosition,
+    },
+}
+
+/// Handle input polymorphism
+pub(crate) enum GranitParser<'a> {
+    #[cfg(feature = "include")]
+    StringParser(BaseParser<'a>),
+
+    #[cfg(not(feature = "include"))]
+    StringParser(BaseParser<'a, StrInput<'a>>),
+    StreamParser(StreamParser<'a>),
+}
+
+impl<'input> GranitParser<'input> {
+    fn next(&mut self) -> Option<Result<(Event<'input>, Span), ScanError>> {
+        match self {
+            GranitParser::StringParser(parser) => parser.next(),
+            GranitParser::StreamParser(parser) => parser.next(),
+        }
+    }
+
+    #[cfg(feature = "include")]
+    fn resolve(
+        &mut self,
+        include_str: &str,
+        location: crate::Location,
+        total_replayed_events: &mut usize,
+        per_anchor_expansions: &mut Vec<usize>,
+        budget: Option<&mut BudgetEnforcer>,
+    ) -> Result<(), crate::de_error::Error> {
+        match self {
+            GranitParser::StringParser(parser) => parser.resolve_with_state(
+                include_str,
+                location,
+                total_replayed_events,
+                per_anchor_expansions,
+                budget,
+            ),
+            GranitParser::StreamParser(parser) => parser.resolve_with_state(
+                include_str,
+                location,
+                total_replayed_events,
+                per_anchor_expansions,
+                budget,
+            ),
+        }
+    }
+
+    #[cfg(feature = "include")]
+    fn has_resolver(&self) -> bool {
+        match self {
+            GranitParser::StringParser(parser) => parser.has_resolver(),
+            GranitParser::StreamParser(parser) => parser.has_resolver(),
+        }
+    }
+
+    #[cfg(not(feature = "include"))]
+    fn has_resolver(&self) -> bool {
+        false
+    }
+
+    #[cfg(feature = "include")]
+    fn recorded_source_chain(&self, source_id: u32) -> Vec<&crate::include_stack::RecordedSource> {
+        match self {
+            GranitParser::StringParser(parser) => parser.recorded_source_chain(source_id),
+            GranitParser::StreamParser(parser) => parser.recorded_source_chain(source_id),
+        }
+    }
+
+    fn current_source_id(&self) -> u32 {
+        #[cfg(feature = "include")]
+        {
+            match self {
+                GranitParser::StringParser(parser) => parser.current_source_id(),
+                GranitParser::StreamParser(parser) => parser.current_source_id(),
+            }
+        }
+        #[cfg(not(feature = "include"))]
+        {
+            0
+        }
+    }
+}
+
+/// Live event source that wraps `granit_parser::Parser` and:
+/// - Skips stream/document markers
+/// - Records anchored subtrees (containers and scalars)
+/// - Resolves aliases by injecting recorded buffers (replaying)
+pub(crate) struct LiveEvents<'a> {
+    /// Underlying streaming parser that produces raw events from the input.
+    parser: GranitParser<'a>,
+    /// Original input string (for zero-copy borrowing). `None` for reader-based input.
+    input: Option<&'a str>,
+
+    /// Whether any content event has been produced in the current stream.
+    produced_any_in_doc: bool,
+    /// Whether we emitted a synthetic null scalar to represent an empty document.
+    synthesized_null_emitted: bool,
+    /// Single-item lookahead buffer (peeked event not yet consumed).
+    look: Option<Ev<'a>>,
+    /// Captures retain recursive alias events until typed deserialization can resolve them.
+    defer_recursive_aliases: bool,
+    /// Comments immediately above the lookahead event.
+    look_leading_comments: Vec<Cow<'a, str>>,
+    /// Comments gathered while scanning before the next data event.
+    pending_leading_comments: Vec<Cow<'a, str>>,
+    /// Right-side comments pending until a caller claims them or the next data
+    /// event is consumed.
+    pending_trailing_comments: Vec<PendingTrailingComment<'a>>,
+    /// Comments attached to the event most recently produced by `next_impl`.
+    produced_leading_comments: Vec<Cow<'a, str>>,
+    /// For alias replay: a stack of injected buffers; we always read from the top first.
+    inject: Vec<InjectFrame>,
+    /// Recorded buffers for anchors (index = `anchor_id`).
+    /// `None` means the id is not recorded (e.g., never anchored or cleared).
+    /// Saphyr's parser `anchor_id` is the sequential counter.
+    anchors: Vec<Option<Box<[Ev<'a>]>>>,
+    /// Recording frames for currently-open anchored containers.
+    rec_stack: Vec<RecFrame<'a>>,
+    /// Budget for raw events and retained anchor copies; independent of alias replay limits below.
+    budget: Option<BudgetEnforcer>,
+    /// Optional reporter to expose budget usage once parsing completes.
+    budget_report: Option<fn(&crate::budget::BudgetReport)>,
+    /// Optional reporter (new API)
+    budget_report_cb: Option<BudgetReportCallback>,
+    /// Location of the last yielded event (for better error reporting).
+    last_location: Location,
+    /// Location of the last event actually consumed by `next`.
+    last_consumed_event_location: Location,
+    /// Kind of the last event actually consumed by `next`.
+    last_consumed_event_kind: Option<ConsumedEventKind>,
+
+    /// Alias-bomb hardening limits and counters.
+    alias_limits: AliasLimits,
+    /// Total number of replayed events across the whole stream (enforced by `alias_limits`).
+    total_replayed_events: usize,
+
+    /// Property interpolation configuration and stream-wide work accounting.
+    #[cfg(feature = "properties")]
+    property_interpolation: PropertyInterpolation,
+    /// Per-anchor replay expansion counters, indexed by anchor id (dense ids).
+    per_anchor_expansions: Vec<usize>,
+    /// Indicates whether a `DocumentEnd` was seen for the last parsed document.
+    seen_doc_end: bool,
+
+    /// Invalid options are reported through the same stream error channel as parse errors.
+    pending_error: Option<Error>,
+
+    /// Whether explicitly tagged nodes whose tags are unknown to this crate are rejected.
+    reject_unsupported_tags: bool,
+
+    /// Whether robotics-only angle tags are supported in strict mode.
+    angle_conversions: bool,
+
+    /// Structural context used to constrain YAML 1.1 key-only tags in strict mode.
+    tag_context: SmallVec<[TagContextFrame; 16]>,
+
+    /// Indentation requirement to validate against parser-reported indentation hints.
+    ///
+    /// For `Uniform(None)` this also memoizes the inferred unit on first use.
+    /// The inferred value persists for the whole input, so indentation stays consistent across every
+    /// document and `!include` (see [`RequireIndent`](crate::RequireIndent)).
+    require_indent: crate::RequireIndent,
+
+    #[cfg(feature = "include")]
+    pending_include_anchor: usize,
+}
+
+/// A single alias-replay stack frame (one active `*alias` expansion).
+#[derive(Clone, Copy, Debug)]
+struct InjectFrame {
+    /// Anchor id being replayed.
+    ///
+    /// This is the numeric anchor id produced by `granit_parser` (dense, increasing).
+    /// It indexes into [`LiveEvents::anchors`], which stores the recorded event buffer
+    /// for each anchored node.
+    anchor_id: usize,
+
+    /// Index of the next event to yield from the recorded anchor buffer.
+    ///
+    /// Invariant:
+    /// - `idx <= anchors[anchor_id].len()`.
+    /// - When `idx == len`, the frame is considered exhausted and will be popped,
+    ///   but *not immediately* (see below).
+    idx: usize,
+
+    /// Use-site (reference) location of the alias token that caused this replay.
+    ///
+    /// Why do we need this:
+    /// - While replaying an alias (`*a`), we yield events captured from the *anchored
+    ///   definition*. Those events carry definition-site locations in [`Ev::location`].
+    /// - For `Spanned<T>` we also want the use-site (“where the value was referenced in
+    ///   the YAML”), so [`Events::reference_location`] needs to return the location of
+    ///   the alias token rather than the replayed events' own locations.
+    ///
+    /// Lifetime/scope:
+    /// - This location applies to the *next node* being deserialized from the replay.
+    /// - We intentionally keep an exhausted frame on the stack until the next pump
+    ///   in [`LiveEvents::next_impl`], so consumers can still query
+    ///   `reference_location()` while deserializing the last yielded node.
+    reference_location: Location,
+}
+
+impl<'a> LiveEvents<'a> {
+    pub(crate) fn from_reader<R: std::io::Read + 'a>(
+        inputs: R,
+        mut options: Options,
+        scope: EnforcingPolicy,
+    ) -> Self {
+        let parser_options = options.parser_options();
+        let budget = options.budget.take();
+        let budget_report = options.budget_report.take();
+        let budget_report_cb = options.budget_report_cb.take();
+        let alias_limits = options.alias_limits;
+        let merge_keys = options.merge_keys;
+        let pending_error = options.validate().err();
+        let reject_unsupported_tags = options.reject_unsupported_tags;
+        let angle_conversions = options.angle_conversions;
+        let require_indent = options.require_indent;
+        #[cfg(feature = "properties")]
+        let property_interpolation = PropertyInterpolation::new(
+            options.property_map.clone(),
+            options.property_syntax,
+            budget.as_ref(),
+        );
+        #[cfg(feature = "include")]
+        let resolver = crate::resolver_from_options(&options);
+
+        // Build a streaming character iterator from the byte reader, honoring input byte cap if configured
+        let max_bytes = budget.as_ref().and_then(|b| b.max_reader_input_bytes);
+        #[cfg(feature = "include")]
+        let default_budget = crate::Budget::default();
+        #[cfg(feature = "include")]
+        let resolved_budget = budget.as_ref().unwrap_or(&default_budget);
+        let (input, reader_bytes_read) = buffered_input_from_reader_with_limit(inputs, max_bytes);
+        #[cfg(not(feature = "include"))]
+        let _ = &reader_bytes_read;
+        #[cfg(feature = "include")]
+        let parser = create_parser_from_reader_input(
+            input,
+            reader_bytes_read,
+            resolved_budget,
+            alias_limits,
+            parser_options,
+            resolver,
+        );
+        #[cfg(not(feature = "include"))]
+        let parser = granit_parser::Parser::with_options(input, parser_options);
+        Self {
+            produced_any_in_doc: false,
+            synthesized_null_emitted: false,
+            parser: GranitParser::StreamParser(parser),
+            input: None, // Reader-based input cannot support zero-copy borrowing
+            look: None,
+            defer_recursive_aliases: false,
+            look_leading_comments: Vec::new(),
+            pending_leading_comments: Vec::new(),
+            pending_trailing_comments: Vec::new(),
+            produced_leading_comments: Vec::new(),
+            inject: Vec::with_capacity(2),
+            anchors: Vec::with_capacity(8),
+            rec_stack: Vec::with_capacity(2),
+            budget: budget.map(|budget| BudgetEnforcer::new(budget, scope, merge_keys)),
+
+            budget_report,
+            budget_report_cb,
+
+            last_location: Location::UNKNOWN,
+            last_consumed_event_location: Location::UNKNOWN,
+            last_consumed_event_kind: None,
+
+            alias_limits,
+            total_replayed_events: 0,
+            #[cfg(feature = "properties")]
+            property_interpolation,
+            per_anchor_expansions: Vec::new(),
+            seen_doc_end: false,
+
+            pending_error,
+            reject_unsupported_tags,
+            angle_conversions,
+            tag_context: SmallVec::new(),
+
+            require_indent,
+            #[cfg(feature = "include")]
+            pending_include_anchor: 0,
+        }
+    }
+}
+
+impl<'a> LiveEvents<'a> {
+    /// Create a new live event source.
+    ///
+    /// # Parameters
+    /// - `input`: YAML source string.
+    /// - `budget`: Optional budget info for raw events (external `BudgetEnforcer`).
+    /// - `alias_limits`: Alias replay limits to mitigate alias bombs.
+    ///
+    /// # Returns
+    /// A configured `LiveEvents` ready to stream events.
+    pub(crate) fn from_str(input: &'a str, mut options: Options) -> Self {
+        let parser_options = options.parser_options();
+        let budget = options.budget.take();
+        let budget_report = options.budget_report.take();
+        let budget_report_cb = options.budget_report_cb.take();
+        let alias_limits = options.alias_limits;
+        let merge_keys = options.merge_keys;
+        let pending_error = options.validate().err();
+        let reject_unsupported_tags = options.reject_unsupported_tags;
+        let angle_conversions = options.angle_conversions;
+        let require_indent = options.require_indent;
+        #[cfg(feature = "properties")]
+        let property_interpolation = PropertyInterpolation::new(
+            options.property_map.clone(),
+            options.property_syntax,
+            budget.as_ref(),
+        );
+        #[cfg(feature = "include")]
+        let resolver = crate::resolver_from_options(&options);
+
+        let input = input.strip_prefix('\u{FEFF}').unwrap_or(input);
+        #[cfg(feature = "include")]
+        let default_budget = crate::Budget::default();
+        #[cfg(feature = "include")]
+        let resolved_budget = budget.as_ref().unwrap_or(&default_budget);
+        #[cfg(feature = "include")]
+        let reader_bytes_read = Rc::new(std::cell::Cell::new(0));
+        #[cfg(feature = "include")]
+        let parser = create_parser_from_str(
+            input,
+            reader_bytes_read,
+            resolved_budget,
+            alias_limits,
+            parser_options,
+            resolver,
+        );
+        #[cfg(not(feature = "include"))]
+        let parser = create_parser_from_str(input, parser_options);
+        Self {
+            produced_any_in_doc: false,
+            synthesized_null_emitted: false,
+            parser: GranitParser::StringParser(parser),
+            input: Some(input),
+            look: None,
+            defer_recursive_aliases: false,
+            look_leading_comments: Vec::new(),
+            pending_leading_comments: Vec::new(),
+            pending_trailing_comments: Vec::new(),
+            produced_leading_comments: Vec::new(),
+            inject: Vec::with_capacity(2),
+            anchors: Vec::with_capacity(8),
+            rec_stack: Vec::with_capacity(2),
+            budget: budget
+                .map(|budget| BudgetEnforcer::new(budget, EnforcingPolicy::AllContent, merge_keys)),
+
+            budget_report,
+            budget_report_cb,
+
+            last_location: Location::UNKNOWN,
+            last_consumed_event_location: Location::UNKNOWN,
+            last_consumed_event_kind: None,
+
+            alias_limits,
+            total_replayed_events: 0,
+            #[cfg(feature = "properties")]
+            property_interpolation,
+            per_anchor_expansions: Vec::new(),
+            seen_doc_end: false,
+
+            pending_error,
+            reject_unsupported_tags,
+            angle_conversions,
+            tag_context: SmallVec::new(),
+
+            require_indent,
+            #[cfg(feature = "include")]
+            pending_include_anchor: 0,
+        }
+    }
+
+    fn normalize_comment_text(text: Cow<'a, str>) -> Cow<'a, str> {
+        match text {
+            Cow::Borrowed(text) => Cow::Borrowed(text.trim()),
+            Cow::Owned(text) => {
+                let trimmed = text.trim();
+                if trimmed.len() == text.len() {
+                    Cow::Owned(text)
+                } else {
+                    Cow::Owned(trimmed.to_owned())
+                }
+            }
+        }
+    }
+
+    fn ensure_supported_tag(
+        &self,
+        tag_kind: SfTag,
+        tag: impl FnOnce() -> String,
+        node_kind: TagNodeKind,
+        scalar_value: Option<&str>,
+        position: NodePosition,
+        location: Location,
+    ) -> Result<(), Error> {
+        if tag_kind
+            .requires()
+            .is_some_and(|required| required != node_kind)
+        {
+            return if tag_kind == SfTag::Include {
+                Err(Error::UnsupportedIncludeForm { location })
+            } else {
+                Err(Error::UnsupportedTag {
+                    tag: tag(),
+                    location,
+                })
+            };
+        }
+
+        if !self.reject_unsupported_tags {
+            return Ok(());
+        }
+
+        let supported_in_strict_mode = match tag_kind {
+            SfTag::Other => false,
+            SfTag::Merge => position == NodePosition::MappingKey && scalar_value == Some("<<"),
+            SfTag::Value => position == NodePosition::MappingKey && scalar_value == Some("="),
+            SfTag::Degrees | SfTag::Radians => self.angle_conversions && cfg!(feature = "robotics"),
+            SfTag::Include => self.parser.has_resolver(),
+            SfTag::None
+            | SfTag::Int
+            | SfTag::Float
+            | SfTag::Bool
+            | SfTag::Null
+            | SfTag::Seq
+            | SfTag::Map
+            | SfTag::TimeStamp
+            | SfTag::Binary
+            | SfTag::String
+            | SfTag::NonSpecific => true,
+        };
+        if !supported_in_strict_mode {
+            return Err(Error::UnsupportedTag {
+                tag: tag(),
+                location,
+            });
+        }
+        Ok(())
+    }
+
+    fn next_node_position(&self) -> NodePosition {
+        match self.tag_context.last() {
+            Some(TagContextFrame::Mapping {
+                expecting_key: true,
+                ..
+            }) => NodePosition::MappingKey,
+            Some(TagContextFrame::Mapping {
+                expecting_key: false,
+                ..
+            }) => NodePosition::MappingValue,
+            Some(TagContextFrame::Sequence { .. }) | None => NodePosition::Other,
+        }
+    }
+
+    fn finish_tagged_node(&mut self, position: NodePosition) {
+        let Some(TagContextFrame::Mapping { expecting_key, .. }) = self.tag_context.last_mut()
+        else {
+            debug_assert_eq!(position, NodePosition::Other);
+            return;
+        };
+
+        match position {
+            NodePosition::MappingKey => {
+                debug_assert!(*expecting_key);
+                *expecting_key = false;
+            }
+            NodePosition::MappingValue => {
+                debug_assert!(!*expecting_key);
+                *expecting_key = true;
+            }
+            NodePosition::Other => {}
+        }
+    }
+
+    fn validate_scalar_tag(
+        &mut self,
+        tag_kind: SfTag,
+        tag: impl FnOnce() -> String,
+        value: &str,
+        location: Location,
+    ) -> Result<(), Error> {
+        let position = self.next_node_position();
+        self.ensure_supported_tag(
+            tag_kind,
+            tag,
+            TagNodeKind::Scalar,
+            Some(value),
+            position,
+            location,
+        )?;
+        if self.reject_unsupported_tags {
+            self.finish_tagged_node(position);
+        }
+        Ok(())
+    }
+
+    fn validate_container_tag(
+        &mut self,
+        tag_kind: SfTag,
+        tag: impl FnOnce() -> String,
+        is_mapping: bool,
+        location: Location,
+    ) -> Result<(), Error> {
+        let parent_position = self.next_node_position();
+        let node_kind = if is_mapping {
+            TagNodeKind::Mapping
+        } else {
+            TagNodeKind::Sequence
+        };
+        self.ensure_supported_tag(tag_kind, tag, node_kind, None, parent_position, location)?;
+        if !self.reject_unsupported_tags {
+            return Ok(());
+        }
+        self.tag_context.push(if is_mapping {
+            TagContextFrame::Mapping {
+                expecting_key: true,
+                parent_position,
+            }
+        } else {
+            TagContextFrame::Sequence { parent_position }
+        });
+        Ok(())
+    }
+
+    fn finish_tagged_container(&mut self, is_mapping: bool) {
+        if !self.reject_unsupported_tags {
+            return;
+        }
+
+        let frame = self.tag_context.pop();
+        debug_assert!(matches!(
+            (is_mapping, frame),
+            (true, Some(TagContextFrame::Mapping { .. }))
+                | (false, Some(TagContextFrame::Sequence { .. }))
+        ));
+        let parent_position = match frame {
+            Some(TagContextFrame::Sequence { parent_position })
+            | Some(TagContextFrame::Mapping {
+                parent_position, ..
+            }) => parent_position,
+            None => return,
+        };
+        self.finish_tagged_node(parent_position);
+    }
+
+    fn validate_replayed_event(&mut self, ev: &Ev<'_>) -> Result<(), Error> {
+        fn replayed_tag_spelling(tag: SfTag, raw_tag: Option<&str>) -> String {
+            raw_tag.map_or_else(
+                || match tag {
+                    SfTag::Merge => "!!merge".to_owned(),
+                    SfTag::Value => "!!value".to_owned(),
+                    _ => String::new(),
+                },
+                str::to_owned,
+            )
+        }
+
+        let defined_location = ev.location();
+        let reference_location = self
+            .inject
+            .last()
+            .map_or(defined_location, |frame| frame.reference_location);
+        let result = match ev {
+            Ev::RecursiveAlias { location, .. } => {
+                self.validate_scalar_tag(SfTag::Null, String::new, "", *location)
+            }
+            Ev::Scalar {
+                value,
+                tag,
+                raw_tag,
+                location,
+                ..
+            } => self.validate_scalar_tag(
+                *tag,
+                || replayed_tag_spelling(*tag, raw_tag.as_deref()),
+                value,
+                *location,
+            ),
+            Ev::SeqStart {
+                tag,
+                raw_tag,
+                location,
+                ..
+            } => self.validate_container_tag(
+                *tag,
+                || replayed_tag_spelling(*tag, raw_tag.as_deref()),
+                false,
+                *location,
+            ),
+            Ev::MapStart {
+                tag,
+                raw_tag,
+                location,
+                ..
+            } => self.validate_container_tag(
+                *tag,
+                || replayed_tag_spelling(*tag, raw_tag.as_deref()),
+                true,
+                *location,
+            ),
+            Ev::SeqEnd { .. } => {
+                self.finish_tagged_container(false);
+                Ok(())
+            }
+            Ev::MapEnd { .. } => {
+                self.finish_tagged_container(true);
+                Ok(())
+            }
+            Ev::Taken { location } => {
+                Err(Error::unexpected("consumed event").with_location(*location))
+            }
+        };
+
+        result.map_err(|error| {
+            attach_alias_locations_if_missing(error, reference_location, defined_location)
+        })
+    }
+
+    fn event_kind(ev: &Ev<'_>) -> Option<ConsumedEventKind> {
+        match ev {
+            Ev::Scalar { .. } | Ev::RecursiveAlias { .. } => Some(ConsumedEventKind::Scalar),
+            Ev::SeqStart { .. } => Some(ConsumedEventKind::SeqStart),
+            Ev::SeqEnd { .. } => Some(ConsumedEventKind::SeqEnd),
+            Ev::MapStart { .. } => Some(ConsumedEventKind::MapStart),
+            Ev::MapEnd { .. } => Some(ConsumedEventKind::MapEnd),
+            Ev::Taken { .. } => None,
+        }
+    }
+
+    fn consumed_comment_location(&self, ev: &Ev<'_>) -> Location {
+        self.inject
+            .last()
+            .map_or_else(|| ev.location(), |frame| frame.reference_location)
+    }
+
+    fn remember_consumed_event(&mut self, ev: &Ev<'_>) {
+        self.last_consumed_event_location = self.consumed_comment_location(ev);
+        self.last_consumed_event_kind = Self::event_kind(ev);
+    }
+
+    fn trailing_comment_kind(&self, location: Location) -> PendingTrailingCommentKind {
+        let follows_completed_node_on_same_line = self
+            .last_consumed_event_kind
+            .is_some_and(ConsumedEventKind::can_own_same_line_trailing_comment)
+            && self.last_consumed_event_location.source_id() == location.source_id()
+            && self.last_consumed_event_location.line() == location.line();
+
+        if follows_completed_node_on_same_line {
+            PendingTrailingCommentKind::AfterConsumedNode
+        } else {
+            PendingTrailingCommentKind::BeforeUpcomingNode
+        }
+    }
+
+    fn take_pending_trailing_comments_where(
+        &mut self,
+        mut predicate: impl FnMut(PendingTrailingCommentKind) -> bool,
+    ) -> Vec<Cow<'a, str>> {
+        let mut taken = Vec::new();
+        let mut retained = Vec::new();
+
+        for comment in std::mem::take(&mut self.pending_trailing_comments) {
+            if predicate(comment.kind) {
+                taken.push(comment.text);
+            } else {
+                retained.push(comment);
+            }
+        }
+
+        self.pending_trailing_comments = retained;
+        taken
+    }
+
+    fn take_all_pending_trailing_comments(&mut self) -> Vec<Cow<'a, str>> {
+        std::mem::take(&mut self.pending_trailing_comments)
+            .into_iter()
+            .map(|comment| comment.text)
+            .collect()
+    }
+
+    fn remember_comment(&mut self, text: Cow<'a, str>, placement: Placement, location: Location) {
+        let text = Self::normalize_comment_text(text);
+        match placement {
+            Placement::Above => self.pending_leading_comments.push(text),
+            Placement::Right => self.pending_trailing_comments.push(PendingTrailingComment {
+                text,
+                kind: self.trailing_comment_kind(location),
+            }),
+            _ => {}
+        }
+    }
+
+    fn attach_leading_comments_to_next_event(&mut self) {
+        self.produced_leading_comments = std::mem::take(&mut self.pending_leading_comments);
+    }
+
+    fn clear_comments_for_consumed_event(&mut self) {
+        self.look_leading_comments.clear();
+        self.produced_leading_comments.clear();
+        self.pending_trailing_comments.clear();
+    }
+
+    /// Core event pump: pulls the next logical event.
+    ///
+    /// Order of precedence:
+    /// - If there is an injected replay buffer (from an alias), serve from it first.
+    /// - Otherwise, pull from the underlying parser, skipping stream/document markers.
+    ///
+    /// During parsing it:
+    /// - Tracks and records anchors for scalars and containers.
+    /// - Injects recorded buffers on aliases, enforcing alias-bomb hardening limits and budget.
+    /// - Maintains `last_location` for better error messages.
+    ///
+    /// Returns Some(event) when an event is produced, or Ok(None) on true EOF.
+    fn next_impl(&mut self) -> Result<Option<Ev<'a>>, Error> {
+        // 1) Serve from injected buffers first (alias replay)
+        //
+        // Important subtlety: we keep an exhausted injection frame on the stack until
+        // the *next* pump so `reference_location()` remains valid while deserializing
+        // the last replayed node. That means the top of the stack may contain frames
+        // with `idx == buf.len()`. Before we consider pulling from the real parser,
+        // we must pop any such exhausted frames.
+        while let Some((anchor_id, idx)) =
+            self.inject.last().map(|frame| (frame.anchor_id, frame.idx))
+        {
+            let buf = self
+                .anchors
+                .get(anchor_id)
+                .and_then(|o| o.as_ref())
+                .ok_or_else(|| Error::unknown_anchor().with_location(self.last_location))?;
+
+            if idx >= buf.len() {
+                // Exhausted: pop and continue (there may be another injected frame beneath).
+                self.inject.pop();
+                continue;
+            }
+
+            let ev = buf[idx].clone();
+            if let Some(frame) = self.inject.last_mut() {
+                frame.idx += 1;
+            }
+            // Do not pop the injection frame yet. `Spanned<T>` (and other consumers)
+            // may query `reference_location()` while deserializing this just-yielded
+            // node. We will pop the frame at the top of the next `next_impl()` call
+            // if it is exhausted.
+
+            match ev {
+                Ev::SeqStart { .. }
+                | Ev::MapStart { .. }
+                | Ev::SeqEnd { .. }
+                | Ev::MapEnd { .. }
+                | Ev::RecursiveAlias { .. }
+                | Ev::Scalar { .. } => {}
+                Ev::Taken { location } => {
+                    return Err(Error::unexpected("consumed event").with_location(location));
+                }
+            }
+            // Count replayed events for alias-bomb hardening.
+            self.total_replayed_events = self
+                .total_replayed_events
+                .checked_add(1)
+                .ok_or(Error::AliasReplayCounterOverflow {
+                    location: Location::UNKNOWN,
+                })
+                .map_err(|err| err.with_location(ev.location()))?;
+            if self.total_replayed_events > self.alias_limits.max_total_replayed_events {
+                return Err(Error::AliasReplayLimitExceeded {
+                    total_replayed_events: self.total_replayed_events,
+                    max_total_replayed_events: self.alias_limits.max_total_replayed_events,
+                    location: ev.location(),
+                });
+            }
+            self.observe_budget_for_replay(&ev)?;
+            self.validate_replayed_event(&ev)?;
+            self.record(
+                &ev, /*is_start*/ false, /*seeded_new_frame*/ false,
+            )?;
+            self.attach_leading_comments_to_next_event();
+            self.last_location = ev.location();
+            self.produced_any_in_doc = true;
+            return Ok(Some(ev));
+        }
+
+        // 2) Pull from the real parser
+        while let Some(item) = self.parser.next() {
+            let (raw, span) = match item {
+                Ok(v) => v,
+                Err(e) => {
+                    let mut err = Error::from_scan_error(e);
+                    if let Some(loc) = err.location() {
+                        err =
+                            err.with_location(loc.with_source_id(self.parser.current_source_id()));
+                    }
+                    return Err(err);
+                }
+            };
+            let location =
+                location_from_span(&span).with_source_id(self.parser.current_source_id());
+
+            // Validate indentation if the parser provided a hint for this span.
+            if let Some(indent) = span.indent {
+                self.require_indent
+                    .is_valid(indent)
+                    .map_err(|err| err.with_location(location))?;
+            }
+
+            if let Some(ref mut budget) = self.budget {
+                let budget_result = if matches!(raw, Event::Alias(_)) {
+                    Ok(())
+                } else {
+                    budget.observe(&raw)
+                };
+                if let Err(breach) = budget_result {
+                    return Err(budget_error(breach).with_location(location));
+                }
+            }
+
+            match raw {
+                Event::Scalar(val, style, anchor_id, tag) => {
+                    #[cfg(feature = "include")]
+                    let mut anchor_id = anchor_id;
+
+                    let tag_s = SfTag::from_optional_cow(&tag);
+
+                    #[cfg(feature = "include")]
+                    if tag_s == SfTag::Include && self.parser.has_resolver() {
+                        match crate::tags::include_spec_from_tag_and_value(&tag, &val) {
+                            Ok(Some(include_spec)) => {
+                                self.parser.resolve(
+                                    &include_spec,
+                                    location,
+                                    &mut self.total_replayed_events,
+                                    &mut self.per_anchor_expansions,
+                                    self.budget.as_mut(),
+                                )?;
+                                self.pending_include_anchor = anchor_id;
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(msg) => return Err(Error::msg(msg).with_location(location)),
+                        }
+                    }
+
+                    #[cfg(feature = "include")]
+                    if self.pending_include_anchor != 0 {
+                        anchor_id = self.pending_include_anchor;
+                        self.pending_include_anchor = 0;
+                    }
+
+                    self.validate_scalar_tag(
+                        tag_s,
+                        || tag.as_deref().map_or_else(String::new, Tag::original),
+                        &val,
+                        location,
+                    )?;
+
+                    let ev = Ev::Scalar {
+                        value: val,
+                        tag: tag_s,
+                        raw_tag: tag.as_ref().map(|t| Cow::Owned(t.to_string())),
+                        style,
+                        anchor: anchor_id,
+                        location,
+                    };
+                    self.record(&ev, false, false)?;
+                    if anchor_id != 0 {
+                        self.observe_recorded_anchor_copy(&ev)?;
+                        self.ensure_anchor_capacity(anchor_id);
+                        self.anchors[anchor_id] = Some(vec![ev.clone()].into_boxed_slice());
+                    }
+                    self.attach_leading_comments_to_next_event();
+                    self.last_location = location;
+                    self.produced_any_in_doc = true;
+                    return Ok(Some(ev));
+                }
+
+                Event::SequenceStart(_style, anchor_id, tag) => {
+                    #[cfg(feature = "include")]
+                    let mut anchor_id = anchor_id;
+                    let tag_s = SfTag::from_optional_cow(&tag);
+                    self.validate_container_tag(
+                        tag_s,
+                        || tag.as_deref().map_or_else(String::new, Tag::original),
+                        false,
+                        location,
+                    )?;
+
+                    #[cfg(feature = "include")]
+                    if self.parser.has_resolver()
+                        && !matches!(
+                            crate::tags::parse_include_tag(&tag),
+                            crate::tags::IncludeTag::NotInclude
+                        )
+                    {
+                        return Err(Error::UnsupportedIncludeForm { location });
+                    }
+
+                    #[cfg(feature = "include")]
+                    if self.pending_include_anchor != 0 {
+                        anchor_id = self.pending_include_anchor;
+                        self.pending_include_anchor = 0;
+                    }
+
+                    let ev = Ev::SeqStart {
+                        anchor: anchor_id,
+                        tag: tag_s,
+                        raw_tag: tag.as_ref().map(|t| Cow::Owned(t.to_string())),
+                        location,
+                    };
+                    // Existing frames go deeper with this start.
+                    self.bump_depth_on_start();
+                    // Start recording for this anchor *after* bumping other frames,
+                    // and include the start event in the new buffer.
+                    if anchor_id != 0 {
+                        let mut buf: SmallVec<[Ev; SMALLVECT_INLINE]> = SmallVec::new();
+                        self.observe_recorded_anchor_copy(&ev)?;
+                        buf.push(ev.clone());
+                        self.rec_stack.push(RecFrame {
+                            id: anchor_id,
+                            depth: 1,
+                            buf,
+                        });
+                    }
+
+                    // Correct recording semantics:
+                    // - If we *just* created a new frame for this start, the start was already seeded.
+                    // - For ordinary (non-anchored) starts, record into *all* frames.
+                    self.record(
+                        &ev,
+                        /*is_start*/ true,
+                        /*seeded_new_frame*/ anchor_id != 0,
+                    )?;
+                    self.attach_leading_comments_to_next_event();
+                    self.last_location = location;
+                    self.produced_any_in_doc = true;
+                    return Ok(Some(ev));
+                }
+                Event::SequenceEnd => {
+                    self.finish_tagged_container(false);
+                    let ev = Ev::SeqEnd { location };
+                    self.record(&ev, false, false)?;
+                    self.bump_depth_on_end()
+                        .map_err(|err| err.with_location(location))?; // may finalize frames
+                    self.produced_leading_comments.clear();
+                    self.last_location = location;
+                    self.produced_any_in_doc = true;
+                    return Ok(Some(ev));
+                }
+
+                Event::MappingStart(_style, anchor_id, tag) => {
+                    let tag_s = SfTag::from_optional_cow(&tag);
+                    self.validate_container_tag(
+                        tag_s,
+                        || tag.as_deref().map_or_else(String::new, Tag::original),
+                        true,
+                        location,
+                    )?;
+
+                    #[cfg(feature = "include")]
+                    let mut anchor_id = anchor_id;
+                    #[cfg(feature = "include")]
+                    if self.parser.has_resolver()
+                        && !matches!(
+                            crate::tags::parse_include_tag(&tag),
+                            crate::tags::IncludeTag::NotInclude
+                        )
+                    {
+                        return Err(Error::UnsupportedIncludeForm { location });
+                    }
+
+                    #[cfg(feature = "include")]
+                    if self.pending_include_anchor != 0 {
+                        anchor_id = self.pending_include_anchor;
+                        self.pending_include_anchor = 0;
+                    }
+
+                    let ev = Ev::MapStart {
+                        anchor: anchor_id,
+                        tag: tag_s,
+                        raw_tag: tag.as_ref().map(|t| Cow::Owned(t.to_string())),
+                        location,
+                    };
+                    self.bump_depth_on_start();
+                    if anchor_id != 0 {
+                        let mut buf: SmallVec<[Ev; SMALLVECT_INLINE]> = SmallVec::new();
+                        self.observe_recorded_anchor_copy(&ev)?;
+                        buf.push(ev.clone());
+                        self.rec_stack.push(RecFrame {
+                            id: anchor_id,
+                            depth: 1,
+                            buf,
+                        });
+                    }
+                    // Container-balance: count open containers independent of budgets/anchors.
+                    self.record(
+                        &ev,
+                        /*is_start*/ true,
+                        /*seeded_new_frame*/ anchor_id != 0,
+                    )?;
+                    self.attach_leading_comments_to_next_event();
+                    self.last_location = location;
+                    self.produced_any_in_doc = true;
+                    return Ok(Some(ev));
+                }
+                Event::MappingEnd => {
+                    self.finish_tagged_container(true);
+                    let ev = Ev::MapEnd { location };
+                    self.record(&ev, false, false)?;
+                    self.bump_depth_on_end()
+                        .map_err(|err| err.with_location(location))?;
+                    self.produced_leading_comments.clear();
+                    self.last_location = location;
+                    self.produced_any_in_doc = true;
+                    return Ok(Some(ev));
+                }
+
+                Event::Alias(anchor_id) => {
+                    #[cfg(feature = "include")]
+                    {
+                        self.pending_include_anchor = 0;
+                    }
+
+                    if let Some(ref mut budget) = self.budget
+                        && let Err(breach) = budget.observe_alias_reference()
+                    {
+                        return Err(budget_error(breach).with_location(location));
+                    }
+
+                    // Alias replay hardening.
+                    if anchor_id >= self.per_anchor_expansions.len() {
+                        self.per_anchor_expansions.resize(anchor_id + 1, 0);
+                    }
+                    self.per_anchor_expansions[anchor_id] =
+                        self.per_anchor_expansions[anchor_id].saturating_add(1);
+                    let count = self.per_anchor_expansions[anchor_id];
+                    if count > self.alias_limits.max_alias_expansions_per_anchor {
+                        return Err(Error::AliasExpansionLimitExceeded {
+                            anchor_id,
+                            expansions: count,
+                            max_expansions_per_anchor: self
+                                .alias_limits
+                                .max_alias_expansions_per_anchor,
+                            location,
+                        });
+                    }
+
+                    // Push for replay; enforce stack depth limit.
+                    let next_depth = self.inject.len() + 1;
+                    if next_depth > self.alias_limits.max_replay_stack_depth {
+                        return Err(Error::AliasReplayStackDepthExceeded {
+                            depth: next_depth,
+                            max_depth: self.alias_limits.max_replay_stack_depth,
+                            location,
+                        });
+                    }
+
+                    if self.rec_stack.iter().any(|frame| frame.id == anchor_id) {
+                        // Record the reference itself: buffering may precede registration of
+                        // the recursive wrapper's placeholder. next/peek resolve it when used.
+                        let ev = Ev::RecursiveAlias {
+                            anchor: anchor_id,
+                            location,
+                        };
+                        self.validate_replayed_event(&ev)?;
+                        self.record(&ev, false, false)?;
+                        self.attach_leading_comments_to_next_event();
+                        self.last_location = location;
+                        self.produced_any_in_doc = true;
+                        return Ok(Some(ev));
+                    }
+
+                    // Ensure the anchor exists now (fail fast); store only id + idx.
+                    let exists = self
+                        .anchors
+                        .get(anchor_id)
+                        .and_then(|o| o.as_ref())
+                        .is_some();
+                    if !exists {
+                        return Err(Error::unknown_anchor().with_location(location));
+                    }
+                    self.inject.push(InjectFrame {
+                        anchor_id,
+                        idx: 0,
+                        reference_location: location,
+                    });
+                    return self.next_impl();
+                }
+
+                Event::DocumentStart(..) => {
+                    // Skip doc start and reset per-document state.
+                    self.reset_document_state();
+                    self.last_location = location;
+                    continue;
+                }
+                Event::DocumentEnd => {
+                    // On document end, mark and skip the parser marker.
+                    self.reset_document_state();
+                    self.seen_doc_end = true;
+                    self.last_location = location;
+                    continue;
+                }
+
+                Event::StreamStart | Event::StreamEnd => {
+                    // Skip stream markers.
+                    self.last_location = location;
+                    continue;
+                }
+
+                Event::Comment(text, placement) => {
+                    self.remember_comment(text, placement, location);
+                    self.last_location = location;
+                    continue;
+                }
+
+                _ => {
+                    return Err(
+                        Error::msg("unsupported event from granit-parser").with_location(location)
+                    );
+                }
+            }
+        }
+
+        // True EOF. If we have not produced any content in the current document,
+        // synthesize a single null scalar event to represent an empty document.
+        if !self.produced_any_in_doc {
+            let ev = Ev::Scalar {
+                value: String::new().into(),
+                tag: SfTag::Null,
+                raw_tag: None,
+                style: ScalarStyle::Plain,
+                anchor: 0,
+                location: self.last_location,
+            };
+            self.validate_replayed_event(&ev)?;
+            self.produced_any_in_doc = true;
+            self.synthesized_null_emitted = true;
+            self.last_location = ev.location();
+            self.produced_leading_comments.clear();
+            return Ok(Some(ev));
+        }
+
+        Ok(None)
+    }
+
+    /// Ensure the anchors vec is large enough for `anchor_id`.
+    fn ensure_anchor_capacity(&mut self, anchor_id: usize) {
+        if anchor_id >= self.anchors.len() {
+            // Allocate at once place for more anchors than just one
+            self.anchors.resize_with(anchor_id + 8, || None);
+        }
+    }
+
+    /// Reset per-document state when encountering a document boundary.
+    ///
+    /// Clears injected replay buffers, recorded anchors, current recording frames,
+    /// and alias-expansion counters. Does not modify global parser state.
+    fn reset_document_state(&mut self) {
+        // Clear injected replay buffers and recording stack but keep capacity.
+        self.inject.clear();
+        self.rec_stack.clear();
+        self.tag_context.clear();
+
+        // Anchors are per-document. Instead of dropping the whole vec (which frees
+        // capacity and may cause re-allocation in the next document), keep the
+        // allocation and just clear the entries.
+        self.anchors.fill(None);
+
+        // Reset per-anchor expansion counters without dropping capacity.
+        self.per_anchor_expansions.fill(0);
+
+        self.total_replayed_events = 0;
+        self.seen_doc_end = false;
+        self.last_consumed_event_location = Location::UNKNOWN;
+        self.last_consumed_event_kind = None;
+    }
+
+    /// Observe the configured budget for a replayed (injected) event.
+    ///
+    /// Reconstructs a parser Event equivalent to the Ev and passes it to the
+    /// `BudgetEnforcer`, attaching the alias use and anchor definition locations on error.
+    fn observe_budget_for_replay(&mut self, ev: &Ev) -> Result<(), Error> {
+        let defined_location = ev.location();
+        let reference_location = self
+            .inject
+            .last()
+            .map_or(defined_location, |frame| frame.reference_location);
+        let Some(budget) = self.budget.as_mut() else {
+            return Ok(());
+        };
+
+        let raw = match ev {
+            Ev::Scalar {
+                value, tag, style, ..
+            } => {
+                // The budget distinguishes an explicitly tagged merge key from a quoted
+                // ordinary `<<` scalar. Preserve that semantic tag while replaying aliases.
+                let tag = (*tag == SfTag::Merge)
+                    .then(|| Cow::Owned(Tag::new("tag:yaml.org,2002:", "merge")));
+                Event::Scalar(Cow::Borrowed(value), *style, 0, tag)
+            }
+            Ev::SeqStart { .. } => Event::SequenceStart(StructureStyle::Block, 0, None),
+            Ev::SeqEnd { .. } => Event::SequenceEnd,
+            Ev::MapStart { .. } => Event::MappingStart(StructureStyle::Block, 0, None),
+            Ev::MapEnd { .. } => Event::MappingEnd,
+            // A recursive reference replays the same scalar placeholder as before; the
+            // alias reference itself was already charged when reading the parser event.
+            Ev::RecursiveAlias { .. } => {
+                Event::Scalar(Cow::Borrowed(""), ScalarStyle::Plain, 0, None)
+            }
+            Ev::Taken { location } => {
+                return Err(Error::unexpected("consumed event").with_location(*location));
+            }
+        };
+
+        budget.observe(&raw).map_err(|breach| {
+            attach_alias_locations_if_missing(
+                budget_error(breach).with_location(defined_location),
+                reference_location,
+                defined_location,
+            )
+        })
+    }
+
+    /// Charge one event copy before retaining it in an anchor buffer.
+    fn observe_recorded_anchor_copy(&mut self, ev: &Ev<'a>) -> Result<(), Error> {
+        let defined_location = ev.location();
+        let reference_location = self
+            .inject
+            .last()
+            .map_or(defined_location, |frame| frame.reference_location);
+        let owned_bytes = ev.owned_payload_bytes();
+        let Some(budget) = self.budget.as_mut() else {
+            return Ok(());
+        };
+
+        budget
+            .observe_recorded_anchor_event(owned_bytes)
+            .map_err(|breach| {
+                attach_alias_locations_if_missing(
+                    budget_error(breach).with_location(defined_location),
+                    reference_location,
+                    defined_location,
+                )
+            })
+    }
+
+    /// Record an event into active recording frames.
+    ///
+    /// # Parameters
+    /// - `ev`: the event to record.
+    /// - `is_start`: whether this is a container start event.
+    /// - `seeded_new_frame`: true **only** when a new frame was just created and already
+    ///   seeded with the same start event (i.e., anchored container start).
+    fn record(&mut self, ev: &Ev<'a>, is_start: bool, seeded_new_frame: bool) -> Result<(), Error> {
+        if self.rec_stack.is_empty() {
+            return Ok(());
+        }
+        if is_start {
+            if seeded_new_frame {
+                let last = self.rec_stack.len() - 1;
+                for i in 0..self.rec_stack.len() {
+                    if i != last {
+                        self.observe_recorded_anchor_copy(ev)?;
+                        self.rec_stack[i].buf.push(ev.clone());
+                    }
+                }
+            } else {
+                for i in 0..self.rec_stack.len() {
+                    self.observe_recorded_anchor_copy(ev)?;
+                    self.rec_stack[i].buf.push(ev.clone());
+                }
+            }
+        } else {
+            for i in 0..self.rec_stack.len() {
+                self.observe_recorded_anchor_copy(ev)?;
+                self.rec_stack[i].buf.push(ev.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// Increase recording depth for all active anchored frames on a container start.
+    fn bump_depth_on_start(&mut self) {
+        for fr in &mut self.rec_stack {
+            fr.depth += 1;
+        }
+    }
+
+    /// Decrease recording depth on a container end and finalize any frames
+    /// that reach depth 0 by storing their recorded buffers in `anchors`.
+    ///
+    /// Returns an error if internal depth accounting underflows.
+    fn bump_depth_on_end(&mut self) -> Result<(), Error> {
+        for fr in &mut self.rec_stack {
+            if fr.depth == 0 {
+                return Err(Error::InternalDepthUnderflow {
+                    location: Location::UNKNOWN,
+                });
+            }
+            fr.depth -= 1;
+        }
+        // Finalize frames that just reached depth == 0 (only possible at the top).
+        while let Some(top) = self.rec_stack.last() {
+            if top.depth == 0 {
+                let done = self
+                    .rec_stack
+                    .pop()
+                    .ok_or(Error::InternalRecursionStackEmpty {
+                        location: Location::UNKNOWN,
+                    })?;
+                // Convert SmallVec into Box<[Ev]> and store by anchor_id.
+                self.ensure_anchor_capacity(done.id);
+                self.anchors[done.id] = Some(done.buf.into_vec().into_boxed_slice());
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Run deferred budget checks for the current document without consuming
+    /// the enforcer, so a streaming iterator can reuse it for later documents.
+    #[cold]
+    pub(crate) fn finalize_document_budget(&mut self) -> Result<(), Error> {
+        if let Some(budget) = self.budget.as_mut() {
+            budget
+                .finalize_document()
+                .map_err(|breach| budget_error(breach).with_location(self.last_location))?;
+        }
+        Ok(())
+    }
+
+    /// Finalize the stream: flush and report budget breaches, if any.
+    ///
+    /// Should be called after parsing completes to surface any delayed
+    /// budget enforcement errors with the last known location.
+    #[cold]
+    pub(crate) fn finish(&mut self) -> Result<(), Error> {
+        let pending_error = self.pending_error.take();
+        let budget_breach = self.deliver_budget_report();
+
+        if let Some(err) = pending_error {
+            return Err(err);
+        }
+        if let Some(breach) = budget_breach {
+            return Err(budget_error(breach).with_location(self.last_location));
+        }
+        Ok(())
+    }
+
+    /// Finalize and deliver the budget report, taking its state so callbacks run once.
+    #[cold]
+    fn deliver_budget_report(&mut self) -> Option<crate::budget::BudgetBreach> {
+        #[cfg(feature = "properties")]
+        if let Some(breach) = self.property_interpolation.breach()
+            && let Some(budget) = self.budget.as_mut()
+        {
+            budget.record_external_breach(breach);
+        }
+
+        if let Some(budget) = self.budget.take() {
+            let report = budget.finalize();
+            if let Some(callback) = self.budget_report.take() {
+                callback(&report);
+            }
+            let breached = report.breached.clone();
+            if let Some(callback) = self.budget_report_cb.take() {
+                callback.borrow_mut()(report);
+            }
+            return breached;
+        }
+        None
+    }
+}
+
+impl Drop for LiveEvents<'_> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            let _ = self.deliver_budget_report();
+        }
+    }
+}
+
+impl<'de> Events<'de> for LiveEvents<'de> {
+    fn defer_recursive_aliases(&mut self, defer: bool) -> bool {
+        std::mem::replace(&mut self.defer_recursive_aliases, defer)
+    }
+
+    /// Get the next event, using a single-item lookahead buffer if present.
+    /// Updates `last_location` to the yielded event's location.
+    fn next(&mut self) -> Result<Option<Ev<'de>>, Error> {
+        if let Some(err) = self.pending_error.take() {
+            return Err(err);
+        }
+
+        if let Some(mut ev) = self.look.take() {
+            if !self.defer_recursive_aliases {
+                ev.resolve_recursive_alias()?;
+            }
+            self.clear_comments_for_consumed_event();
+            self.last_location = ev.location();
+            self.remember_consumed_event(&ev);
+            return Ok(Some(ev));
+        }
+        let mut event = self.next_impl()?;
+        if !self.defer_recursive_aliases
+            && let Some(ev) = event.as_mut()
+        {
+            ev.resolve_recursive_alias()?;
+        }
+        self.clear_comments_for_consumed_event();
+        if let Some(ev) = event.as_ref() {
+            self.remember_consumed_event(ev);
+        }
+        Ok(event)
+    }
+    /// Peek at the next event without consuming it, filling the lookahead buffer if empty.
+    fn peek(&mut self) -> Result<Option<&Ev<'de>>, Error> {
+        if let Some(err) = self.pending_error.take() {
+            return Err(err);
+        }
+
+        if self.look.is_none() {
+            self.look = self.next_impl()?;
+            self.look_leading_comments = std::mem::take(&mut self.produced_leading_comments);
+        }
+        if !self.defer_recursive_aliases
+            && let Some(ev) = self.look.as_mut()
+        {
+            ev.resolve_recursive_alias()?;
+        }
+        if let Some(ev) = self.look.as_ref() {
+            self.last_location = ev.location();
+        }
+
+        Ok((&self.look).into())
+    }
+
+    fn strip_peeked_node_tag(&mut self) -> Result<(), Error> {
+        let location = self
+            .look
+            .as_ref()
+            .map_or(self.last_location, super::events::Ev::location);
+        match self.look.as_mut() {
+            Some(event) => event
+                .strip_node_tag()
+                .then_some(())
+                .ok_or_else(|| Error::unexpected("tagged node").with_location(location)),
+            None => Err(Error::unexpected("tagged node").with_location(location)),
+        }
+    }
+    fn last_location(&self) -> Location {
+        self.last_location
+    }
+
+    fn reference_location(&self) -> Location {
+        if let Some(frame) = self.inject.last() {
+            return frame.reference_location;
+        }
+        self.look
+            .as_ref()
+            .map_or(self.last_location, super::events::Ev::location)
+    }
+
+    fn take_leading_comments_for_next_node(&mut self) -> Result<Vec<Cow<'de, str>>, Error> {
+        let _ = self.peek()?;
+        Ok(std::mem::take(&mut self.look_leading_comments))
+    }
+
+    fn take_separator_comments_before_mapping_value(
+        &mut self,
+    ) -> Result<Vec<Cow<'de, str>>, Error> {
+        let _ = self.peek()?;
+        Ok(self.take_all_pending_trailing_comments())
+    }
+
+    fn take_separator_comments_before_sequence_item_value(
+        &mut self,
+    ) -> Result<Vec<Cow<'de, str>>, Error> {
+        let _ = self.peek()?;
+        Ok(self.take_pending_trailing_comments_where(|kind| {
+            kind == PendingTrailingCommentKind::BeforeUpcomingNode
+        }))
+    }
+
+    fn take_trailing_comments_after_node(&mut self) -> Result<Vec<Cow<'de, str>>, Error> {
+        let _ = self.peek()?;
+        Ok(self.take_pending_trailing_comments_where(|kind| {
+            kind == PendingTrailingCommentKind::AfterConsumedNode
+        }))
+    }
+
+    fn input_for_borrowing(&self) -> Option<&'de str> {
+        self.input
+    }
+
+    #[cfg(feature = "properties")]
+    fn property_interpolation(&self) -> &PropertyInterpolation {
+        &self.property_interpolation
+    }
+}
+
+impl LiveEvents<'_> {
+    pub(crate) fn seen_doc_end(&self) -> bool {
+        self.seen_doc_end
+    }
+    pub(crate) fn synthesized_null_emitted(&self) -> bool {
+        self.synthesized_null_emitted
+    }
+
+    #[cfg(feature = "include")]
+    pub(crate) fn recorded_source_chain(
+        &self,
+        source_id: u32,
+    ) -> Vec<&crate::include_stack::RecordedSource> {
+        self.parser.recorded_source_chain(source_id)
+    }
+
+    /// Skip events until the next document boundary or EOF.
+    ///
+    /// This is used for error recovery in the streaming reader: after a deserialization
+    /// error mid-document, we consume remaining events until we see a `DocumentStart`
+    /// (indicating the next document) or reach EOF. This allows the iterator to continue
+    /// with subsequent documents.
+    ///
+    /// Returns `true` if a new document was found, `false` if EOF was reached.
+    /// Syntax errors or budget breaches during skipping cause the method to
+    /// return `false` (EOF-like).
+    pub(crate) fn skip_to_next_document(&mut self) -> bool {
+        // Clear any peeked event and injection state
+        self.look = None;
+        self.inject.clear();
+        self.rec_stack.clear();
+        self.tag_context.clear();
+
+        // Pull raw events from the parser until we see DocumentStart or EOF
+        while let Some(item) = self.parser.next() {
+            let Ok((raw, span)) = item else {
+                // Syntax error while skipping; treat as EOF
+                return false;
+            };
+            let location =
+                location_from_span(&span).with_source_id(self.parser.current_source_id());
+            self.last_location = location;
+
+            if let Some(ref mut budget) = self.budget
+                && budget.observe(&raw).is_err()
+            {
+                // Budget exhausted while skipping recovery content.
+                return false;
+            }
+
+            match raw {
+                Event::DocumentStart(..) => {
+                    // Found the start of the next document
+                    self.reset_document_state();
+                    self.produced_any_in_doc = false;
+                    return true;
+                }
+                Event::DocumentEnd => {
+                    // End of current document; reset state and continue looking for next
+                    self.reset_document_state();
+                    self.produced_any_in_doc = false;
+                }
+                Event::StreamEnd => {
+                    // End of stream
+                    return false;
+                }
+                _ => {
+                    // Skip all other events (scalars, mappings, sequences, etc. and continue)
+                }
+            }
+        }
+
+        // Parser exhausted
+        false
+    }
+}

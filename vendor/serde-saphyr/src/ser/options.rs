@@ -1,0 +1,198 @@
+//! Serializer options for YAML emission.
+//!
+//! Controls indentation and optional anchor name generation for the serializer.
+//!
+//! Example: use 4-space indentation and a custom anchor naming scheme.
+//!
+//! ```rust
+//! use serde::Serialize;
+//!
+//! #[derive(Serialize)]
+//! struct Item { a: i32, b: bool }
+//!
+//! let mut buf = String::new();
+//! let opts = serde_saphyr::ser_options! {
+//!     indent_step: 4,
+//!     anchor_generator: Some(|id| format!("id{}/", id)),
+//! };
+//! serde_saphyr::to_fmt_writer_with_options(&mut buf, &Item { a: 1, b: true }, opts).unwrap();
+//! assert!(buf.contains("a: 1"));
+//! ```
+
+use crate::ser_error::Error;
+
+/// Placement style for comments emitted by [`crate::Commented`].
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommentPosition {
+    /// Emit the comment inline on the right side from the item it describes (default)
+    Inline,
+    /// Emit the comment above the item it describes
+    Above,
+}
+
+/// Serializer options for YAML emission.
+///
+/// This struct controls various aspects of YAML serialization, such as indentation,
+/// anchor generation, and scalar styles.
+///
+/// Construct `SerializerOptions` using the [`ser_options!`](crate::ser_options!)
+/// macro to ensure compatibility with future updates.
+///
+/// ```rust
+/// use serde::Serialize;
+/// use serde_saphyr::{ser_options, to_string_with_options};
+///
+/// #[derive(Serialize)]
+/// struct Config {
+///     name: String,
+///     values: Vec<i32>,
+/// }
+///
+/// let config = Config {
+///     name: "test".to_string(),
+///     values: vec![1, 2, 3],
+/// };
+///
+/// // Use 4-space indentation and quote all strings
+/// let options = ser_options! {
+///     indent_step: 4,
+///     quote_all: true,
+/// };
+///
+/// let yaml = to_string_with_options(&config, options).unwrap();
+/// ```
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct SerializerOptions {
+    /// If true, empty maps are emitted as braces {} and empty lists as [] (this is the default).
+    /// This form is valid YAML, distinguishes empty collections from null, and may be easier
+    /// for a human to read.
+    pub empty_as_braces: bool,
+    /// Number of spaces to indent per nesting level when emitting block-style collections (2 by default).
+    /// Values must be in `1..=64`.
+    pub indent_step: usize,
+    /// When enabled, emit list items with a more compact indentation style. On by default.
+    /// ```yaml
+    ///       containers:
+    ///       - env:
+    ///         - name: METHOD
+    ///           value: WATCH
+    /// ```
+    ///
+    /// Compared to a more expanded indentation style:
+    ///
+    /// ```yaml
+    ///       containers:
+    ///         - env:
+    ///             - name: METHOD
+    ///               value: WATCH
+    /// ```
+    pub compact_list_indent: bool,
+    /// Optional custom anchor-name generator.
+    ///
+    /// Receives a monotonically increasing `usize` id (starting at 1) and returns the
+    /// anchor name to emit. If `None`, the built-in generator yields names like `a1`, `a2`, ...
+    /// Generated names must be 1 to 256 bytes and cannot contain whitespace, control characters,
+    /// or the flow punctuation `[`, `]`, `{`, `}`, or `,`; unsupported names produce a
+    /// serialization error. The generator remains responsible for returning unique names.
+    pub anchor_generator: Option<fn(usize) -> String>,
+    /// Threshold for block-string wrappers ([`crate::LitStr`]/[`crate::FoldStr`] and owned variants
+    /// [`crate::LitString`]/[`crate::FoldString`]).
+    ///
+    /// If the string contains a newline, block style is always used. Otherwise, when the
+    /// string is single-line and its length is strictly less than this threshold, the
+    /// serializer emits a normal YAML scalar (no block style). Longer strings use block
+    /// styles `|` or `>` depending on the wrapper. See the type docs for
+    /// [`crate::LitStr`], [`crate::FoldStr`], [`crate::LitString`] and [`crate::FoldString`] for
+    /// examples.
+    pub min_fold_chars: usize,
+    /// Maximum width (in characters) for lines in folded block scalars (`>`).
+    ///
+    /// Lines are wrapped **only** at whitespace so that each emitted line is at most
+    /// this many characters long (excluding indentation). If no whitespace is present
+    /// within the limit (e.g., a single long token), the line is emitted unwrapped
+    /// to preserve round-trip correctness: YAML folded scalars typically fold inserted
+    /// newlines back as spaces when parsing. Default: 80.
+    pub folded_wrap_chars: usize,
+    /// When enabled, serialize simple enums that become a single scalar (unit variants)
+    /// using YAML tags, e.g. `!!Enum Variant` instead of a plain scalar `Variant`.
+    /// Deserializer does not need this setting as both cases will be understood. Off by default.
+    pub tagged_enums: bool,
+
+    /// When enabled, strings containing more than `folded_wrap_chars` (80 by default) are written
+    /// in folded block scalar style (`>`), and strings containing newlines are written in
+    /// literal block scalar style (`|`), selecting chomping based on the number of trailing empty lines.
+    /// On by default.
+    pub prefer_block_scalars: bool,
+
+    /// When enabled, quote all string scalars. Uses single quotes by default,
+    /// but switches to double quotes when the string contains escape sequences
+    /// (control characters like `\n`, `\t`, `\r`, backslash) or single quotes.
+    /// Disables block scalar styles (`|` and `>`) for quoted strings when active.
+    /// Off by default.
+    pub quote_all: bool,
+
+    /// Controls where [`crate::Commented`] comments are emitted in block style.
+    ///
+    /// [`CommentPosition::Inline`] preserves the existing `value # comment` behavior for
+    /// scalars and aliases. [`CommentPosition::Above`] emits the comment on its own line
+    /// immediately before the wrapped value. Comments remain suppressed in flow-style
+    /// collections in both modes.
+    pub comment_position: CommentPosition,
+
+    /// When enabled, emit `%YAML 1.2` and the required document start marker
+    /// at the beginning of the document, and use YAML 1.2 rules for certain
+    /// compatibility heuristics.
+    ///
+    /// With the default `false`, strings matching YAML 1.1 numeric, boolean,
+    /// null, timestamp, and reserved-token spellings are quoted to preserve their
+    /// type across readers. With `true`, YAML 1.1-specific quoting checks are
+    /// disabled, including boolean spellings like `yes`/`no`/`on`/`off`/`y`/`n`,
+    /// sexagesimal numbers, and timestamps. YAML syntax safety checks still apply.
+    /// Default: false.
+    pub yaml_12: bool,
+}
+
+// Below this length, block-string wrappers serialize as regular scalars
+// instead of YAML block styles. This keeps short values compact.
+pub(crate) const MIN_FOLD_CHARS: usize = 32;
+/// Maximum width (in characters) for lines inside folded block scalars.
+/// Lines will be wrapped at whitespace so that each emitted line is at most
+/// this many characters long (excluding indentation). If no whitespace is
+/// available within the limit, the line is not wrapped.
+pub(crate) const FOLDED_WRAP_CHARS: usize = 80;
+
+impl SerializerOptions {
+    // Keep this value in sync with the literal compile-time check in `ser_options!`.
+    pub(crate) const MAX_INDENT_STEP: usize = 64;
+
+    pub(crate) fn consistent(&self) -> Result<(), Error> {
+        if self.indent_step == 0 || self.indent_step > Self::MAX_INDENT_STEP {
+            return Err(Error::InvalidOptions(format!(
+                "indent_step must be in 1..={}",
+                Self::MAX_INDENT_STEP
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl Default for SerializerOptions {
+    fn default() -> Self {
+        // Defaults mirror internal constants used by the serializer.
+        Self {
+            indent_step: 2,
+            compact_list_indent: true,
+            anchor_generator: None,
+            min_fold_chars: MIN_FOLD_CHARS,
+            folded_wrap_chars: FOLDED_WRAP_CHARS,
+            tagged_enums: false,
+            empty_as_braces: true,
+            prefer_block_scalars: true,
+            quote_all: false,
+            comment_position: CommentPosition::Inline,
+            yaml_12: false,
+        }
+    }
+}

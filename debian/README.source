@@ -1,0 +1,17 @@
+The Rust dependency sources are vendored under vendor so package builds
+do not access the network. The vendor tree contains the locked dependencies
+needed for the Linux amd64, arm64, and i386 targets.
+
+The vendor tree includes Cargo.toml.orig files referenced by Cargo's checksum
+metadata. debian/rules excludes vendor from dh_clean so these source files are
+preserved across package builds.
+
+The AWS-LC jitterentropy source must be compiled without optimization.
+debian/rules preserves the Debian C compiler flags and appends -O0 for
+AWS-LC's native build.
+
+The vendored crates retain their upstream Cargo.toml files and license texts.
+Before upload to a Debian or Ubuntu archive, review the dependency licensing
+and replace vendored copies with archive-provided librust-* packages where
+compatible. Crates or versions not yet in the archive may need to be packaged
+separately.

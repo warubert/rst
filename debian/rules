@@ -1,0 +1,21 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@ --buildsystem=none
+
+override_dh_auto_build:
+	AWS_LC_SYS_CFLAGS="$(CFLAGS) -O0" cargo build --release --locked --offline
+
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	AWS_LC_SYS_CFLAGS="$(CFLAGS) -O0" cargo test --locked --offline
+endif
+
+override_dh_auto_install:
+	install -D -m 0755 target/release/rst debian/tmp/usr/bin/rst
+
+override_dh_auto_clean:
+	cargo clean --offline
+
+override_dh_clean:
+	dh_clean -Xvendor

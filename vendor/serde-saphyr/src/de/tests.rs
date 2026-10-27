@@ -1,0 +1,1064 @@
+use std::borrow::Cow;
+
+use granit_parser::ScalarStyle;
+
+#[cfg(feature = "properties")]
+use super::PropertySyntax;
+use super::cfg::Cfg;
+#[cfg(feature = "properties")]
+use super::events::PropertyInterpolation;
+use super::events::{Ev, Events, ReplayEvents, attach_alias_locations_if_missing};
+use super::key_nodes::*;
+use super::tags::SfTag;
+use super::{DuplicateKeyPolicy, Error, Location, MergeKeyPolicy, Options};
+
+fn loc(line: usize, column: usize) -> Location {
+    Location::new(line, column)
+}
+
+fn scalar(
+    value: &'static str,
+    tag: SfTag,
+    raw_tag: Option<&'static str>,
+    style: ScalarStyle,
+    location: Location,
+) -> Ev<'static> {
+    Ev::Scalar {
+        value: Cow::Borrowed(value),
+        tag,
+        raw_tag: raw_tag.map(Cow::Borrowed),
+        style,
+        anchor: 0,
+        location,
+    }
+}
+
+fn seq_start(tag: SfTag, raw_tag: Option<&'static str>, location: Location) -> Ev<'static> {
+    Ev::SeqStart {
+        anchor: 0,
+        tag,
+        raw_tag: raw_tag.map(Cow::Borrowed),
+        location,
+    }
+}
+
+fn seq_end(location: Location) -> Ev<'static> {
+    Ev::SeqEnd { location }
+}
+
+fn map_start(location: Location) -> Ev<'static> {
+    tagged_map_start(SfTag::None, None, location)
+}
+
+fn tagged_map_start(tag: SfTag, raw_tag: Option<&'static str>, location: Location) -> Ev<'static> {
+    Ev::MapStart {
+        anchor: 0,
+        tag,
+        raw_tag: raw_tag.map(Cow::Borrowed),
+        location,
+    }
+}
+
+fn map_end(location: Location) -> Ev<'static> {
+    Ev::MapEnd { location }
+}
+
+#[cfg(not(feature = "properties"))]
+fn replay_events(buf: Vec<Ev<'static>>) -> ReplayEvents<'static> {
+    ReplayEvents::new(buf)
+}
+
+#[cfg(feature = "properties")]
+fn empty_property_interpolation() -> PropertyInterpolation {
+    let budget = crate::Budget::default();
+    PropertyInterpolation::new(None, PropertySyntax::Braced, Some(&budget))
+}
+
+#[cfg(feature = "properties")]
+fn replay_events(buf: Vec<Ev<'static>>) -> ReplayEvents<'static> {
+    ReplayEvents::new(buf, empty_property_interpolation())
+}
+
+fn captured_fingerprint(events: Vec<Ev<'static>>) -> KeyFingerprint<'static> {
+    let mut replay = replay_events(events);
+    let mut node = capture_node(&mut replay).expect("valid node should be captured");
+    node.take_fingerprint()
+}
+
+#[cfg(not(feature = "properties"))]
+fn replay_events_with_reference(
+    buf: Vec<Ev<'static>>,
+    reference: Location,
+) -> ReplayEvents<'static> {
+    ReplayEvents::with_reference(buf, reference)
+}
+
+#[cfg(feature = "properties")]
+fn replay_events_with_reference(
+    buf: Vec<Ev<'static>>,
+    reference: Location,
+) -> ReplayEvents<'static> {
+    ReplayEvents::with_reference(buf, reference, empty_property_interpolation())
+}
+
+#[cfg(not(feature = "properties"))]
+fn pending_from_events(
+    events: Vec<Ev<'static>>,
+    location: Location,
+    reference_location: Location,
+) -> Result<Vec<PendingEntry<'static>>, Error> {
+    pending_entries_from_events(
+        events,
+        location,
+        reference_location,
+        MergeKeyPolicy::Merge,
+        DuplicateKeyPolicy::Error,
+        false,
+    )
+}
+
+#[cfg(feature = "properties")]
+fn pending_from_events(
+    events: Vec<Ev<'static>>,
+    location: Location,
+    reference_location: Location,
+) -> Result<Vec<PendingEntry<'static>>, Error> {
+    pending_entries_from_events(
+        events,
+        location,
+        reference_location,
+        MergeKeyPolicy::Merge,
+        DuplicateKeyPolicy::Error,
+        false,
+        empty_property_interpolation(),
+    )
+}
+
+fn scalar_text(events: &[Ev<'_>]) -> Option<String> {
+    match events.first() {
+        Some(Ev::Scalar { value, .. }) => Some(value.as_ref().to_owned()),
+        _ => None,
+    }
+}
+
+#[track_caller]
+fn pending_pair(entry: &PendingEntry<'_>) -> (String, String, Location) {
+    (
+        scalar_text(entry.key.events()).expect("scalar key"),
+        scalar_text(entry.value.events()).expect("scalar value"),
+        entry.reference_location,
+    )
+}
+
+#[track_caller]
+fn unwrap_err<T>(result: Result<T, Error>) -> Error {
+    match result {
+        Ok(_) => panic!("expected error"),
+        Err(err) => err,
+    }
+}
+
+fn scalar_key_node(
+    value: &'static str,
+    tag: SfTag,
+    style: ScalarStyle,
+    location: Location,
+) -> KeyNode<'static> {
+    KeyNode::Scalar {
+        events: vec![scalar(value, tag, None, style, location)],
+        location,
+    }
+}
+
+#[test]
+fn cfg_and_replay_events_follow_options_and_reference_overrides() {
+    let options = Options {
+        duplicate_keys: DuplicateKeyPolicy::LastWins,
+        merge_keys: MergeKeyPolicy::AsOrdinary,
+        legacy_octal_numbers: true,
+        strict_booleans: true,
+        angle_conversions: true,
+        ignore_binary_tag_for_string: true,
+        no_schema: true,
+        reject_non_finite_typeless_float: true,
+        ..Options::default()
+    };
+
+    let cfg = Cfg::from_options(&options);
+    assert!(matches!(cfg.dup_policy, DuplicateKeyPolicy::LastWins));
+    assert!(matches!(cfg.merge_keys, MergeKeyPolicy::AsOrdinary));
+    assert!(cfg.legacy_octal_numbers);
+    assert!(cfg.strict_booleans);
+    assert!(cfg.angle_conversions);
+    assert!(cfg.ignore_binary_tag_for_string);
+    assert!(cfg.no_schema);
+    assert!(cfg.reject_non_finite_typeless_float);
+
+    assert_eq!(Ev::default().location(), Location::UNKNOWN);
+
+    let value_loc = loc(1, 1);
+    let alias_loc = loc(9, 9);
+    let mut replay = replay_events_with_reference(
+        vec![scalar(
+            "value",
+            SfTag::String,
+            None,
+            ScalarStyle::Plain,
+            value_loc,
+        )],
+        alias_loc,
+    );
+    assert!(matches!(replay.peek().unwrap(), Some(Ev::Scalar { .. })));
+    assert_eq!(replay.reference_location(), alias_loc);
+    assert_eq!(replay.last_location(), value_loc);
+    assert!(matches!(
+        replay.next().unwrap(),
+        Some(Ev::Scalar { location, .. }) if location == value_loc
+    ));
+    assert!(replay.peek().unwrap().is_none());
+    assert_eq!(replay.last_location(), value_loc);
+    assert_eq!(replay.reference_location(), alias_loc);
+
+    let empty = replay_events(Vec::new());
+    assert_eq!(empty.last_location(), Location::UNKNOWN);
+    assert_eq!(empty.reference_location(), Location::UNKNOWN);
+}
+
+#[test]
+fn attach_alias_locations_prefers_dual_locations_and_existing_errors() {
+    let reference = loc(1, 2);
+    let defined = loc(3, 4);
+    let existing = loc(5, 6);
+
+    let err = Error::msg("alias boom").with_location(existing);
+    let expected_message = err.to_string();
+    let attached = attach_alias_locations_if_missing(err, reference, defined);
+    match attached {
+        Error::AliasError { msg, locations } => {
+            assert_eq!(msg, expected_message);
+            assert_eq!(locations.reference_location, reference);
+            assert_eq!(locations.defined_location, defined);
+        }
+        other => panic!("expected alias error, got {other:?}"),
+    }
+
+    let preserved = attach_alias_locations_if_missing(
+        Error::unexpected("value").with_location(existing),
+        Location::UNKNOWN,
+        Location::UNKNOWN,
+    );
+    assert!(!matches!(&preserved, Error::AliasError { .. }));
+    assert_eq!(preserved.location(), Some(existing));
+
+    let preferred_reference =
+        attach_alias_locations_if_missing(Error::msg("same"), reference, reference);
+    assert_eq!(preferred_reference.location(), Some(reference));
+
+    let fallback_defined =
+        attach_alias_locations_if_missing(Error::msg("defined"), Location::UNKNOWN, defined);
+    assert_eq!(fallback_defined.location(), Some(defined));
+}
+
+#[test]
+fn simple_tagged_enum_helpers_accept_only_simple_variant_names() {
+    assert_eq!(
+        simple_tagged_enum_name(&Some(Cow::Borrowed("!Widget")), &SfTag::Other),
+        Some("Widget".to_owned())
+    );
+    assert_eq!(
+        simple_tagged_enum_name(&Some(Cow::Borrowed("!map")), &SfTag::Map),
+        None
+    );
+    assert_eq!(
+        simple_tagged_enum_name(&Some(Cow::Borrowed("tag:yaml.org,2002:map")), &SfTag::Map),
+        None
+    );
+    assert_eq!(
+        simple_tagged_enum_name(
+            &Some(Cow::Borrowed("!<tag:yaml.org,2002:Widget>")),
+            &SfTag::Other
+        ),
+        Some("Widget".to_owned())
+    );
+    assert_eq!(
+        simple_tagged_enum_name(&Some(Cow::Borrowed("!")), &SfTag::Other),
+        None
+    );
+    assert_eq!(
+        simple_tagged_enum_name(&Some(Cow::Borrowed("!bad:name")), &SfTag::Other),
+        None
+    );
+    assert_eq!(
+        simple_tagged_enum_name(&Some(Cow::Borrowed("!bang!oops")), &SfTag::Other),
+        None
+    );
+    assert_eq!(
+        simple_tagged_enum_name(&Some(Cow::Borrowed("!Widget")), &SfTag::String),
+        None
+    );
+
+    let scalar_loc = loc(7, 1);
+    let scalar_event = scalar(
+        "payload",
+        SfTag::Other,
+        Some("!ScalarVariant"),
+        ScalarStyle::Plain,
+        scalar_loc,
+    );
+    assert_eq!(
+        simple_tagged_node_name(&scalar_event),
+        Some(("ScalarVariant".to_owned(), scalar_loc))
+    );
+
+    let seq_loc = loc(8, 1);
+    let seq_event = seq_start(SfTag::Other, Some("!SeqVariant"), seq_loc);
+    assert_eq!(
+        simple_tagged_node_name(&seq_event),
+        Some(("SeqVariant".to_owned(), seq_loc))
+    );
+
+    let map_loc = loc(9, 1);
+    let map_event = tagged_map_start(SfTag::Other, Some("!MapVariant"), map_loc);
+    assert_eq!(
+        simple_tagged_node_name(&map_event),
+        Some(("MapVariant".to_owned(), map_loc))
+    );
+    assert_eq!(simple_tagged_node_name(&map_start(loc(10, 1))), None);
+}
+
+#[test]
+fn key_fingerprint_helpers_normalize_string_like_tags() {
+    let no_raw_tag = None;
+    assert_eq!(
+        canonical_scalar_key_tag(SfTag::None, &no_raw_tag),
+        CanonicalKeyTag::Semantic(SfTag::String)
+    );
+    assert_eq!(
+        canonical_scalar_key_tag(SfTag::Include, &no_raw_tag),
+        CanonicalKeyTag::Semantic(SfTag::String)
+    );
+    assert_eq!(
+        canonical_scalar_key_tag(SfTag::NonSpecific, &no_raw_tag),
+        CanonicalKeyTag::Semantic(SfTag::String)
+    );
+    assert_eq!(
+        canonical_scalar_key_tag(SfTag::Int, &no_raw_tag),
+        CanonicalKeyTag::Semantic(SfTag::Int)
+    );
+    assert_eq!(
+        canonical_scalar_key_tag(SfTag::Other, &Some(Cow::Borrowed("!Variant"))),
+        CanonicalKeyTag::Custom(Cow::Borrowed("!Variant"))
+    );
+
+    let stringy = scalar_key_node("hello", SfTag::Other, ScalarStyle::Plain, loc(8, 1));
+    assert_eq!(stringy.stringy_scalar_value(), Some("hello"));
+
+    let binary = scalar_key_node("SGVsbG8=", SfTag::Binary, ScalarStyle::Plain, loc(8, 2));
+    assert_eq!(binary.stringy_scalar_value(), None);
+    let mut replay = replay_events(vec![
+        seq_start(SfTag::None, None, loc(8, 3)),
+        seq_end(loc(8, 4)),
+    ]);
+    assert_eq!(
+        capture_node(&mut replay).unwrap().stringy_scalar_value(),
+        None
+    );
+}
+
+#[test]
+fn scalar_key_fingerprint_borrows_event_value() {
+    let key = scalar_key_node("borrowed", SfTag::None, ScalarStyle::Plain, loc(9, 1));
+
+    assert!(matches!(
+        key.fingerprint().into_owned(),
+        KeyFingerprint::Scalar {
+            value: Cow::Borrowed("borrowed"),
+            tag: CanonicalKeyTag::Semantic(SfTag::String),
+        }
+    ));
+}
+
+#[test]
+fn captured_fingerprints_include_canonical_root_tag_identity() {
+    let scalar_first = captured_fingerprint(vec![scalar(
+        "1",
+        SfTag::Other,
+        Some("!First"),
+        ScalarStyle::Plain,
+        loc(9, 2),
+    )]);
+    let scalar_second = captured_fingerprint(vec![scalar(
+        "1",
+        SfTag::Other,
+        Some("!Second"),
+        ScalarStyle::Plain,
+        loc(9, 3),
+    )]);
+    assert_ne!(scalar_first, scalar_second);
+
+    let sequence_first = captured_fingerprint(vec![
+        seq_start(SfTag::Other, Some("!First"), loc(9, 4)),
+        scalar("1", SfTag::None, None, ScalarStyle::Plain, loc(9, 5)),
+        seq_end(loc(9, 6)),
+    ]);
+    let sequence_second = captured_fingerprint(vec![
+        seq_start(SfTag::Other, Some("!Second"), loc(9, 7)),
+        scalar("1", SfTag::None, None, ScalarStyle::Plain, loc(9, 8)),
+        seq_end(loc(9, 9)),
+    ]);
+    assert_ne!(sequence_first, sequence_second);
+
+    let mapping_first = captured_fingerprint(vec![
+        tagged_map_start(SfTag::Other, Some("!First"), loc(9, 10)),
+        scalar("x", SfTag::None, None, ScalarStyle::Plain, loc(9, 11)),
+        scalar("1", SfTag::None, None, ScalarStyle::Plain, loc(9, 12)),
+        map_end(loc(9, 13)),
+    ]);
+    let mapping_second = captured_fingerprint(vec![
+        tagged_map_start(SfTag::Other, Some("!Second"), loc(9, 14)),
+        scalar("x", SfTag::None, None, ScalarStyle::Plain, loc(9, 15)),
+        scalar("1", SfTag::None, None, ScalarStyle::Plain, loc(9, 16)),
+        map_end(loc(9, 17)),
+    ]);
+    assert_ne!(mapping_first, mapping_second);
+
+    let implicit_sequence = captured_fingerprint(vec![
+        seq_start(SfTag::None, None, loc(9, 18)),
+        seq_end(loc(9, 19)),
+    ]);
+    let core_sequence = captured_fingerprint(vec![
+        seq_start(SfTag::Seq, Some("tag:yaml.org,2002:seq"), loc(9, 20)),
+        seq_end(loc(9, 21)),
+    ]);
+    let non_specific_sequence = captured_fingerprint(vec![
+        seq_start(SfTag::NonSpecific, Some("!"), loc(9, 22)),
+        seq_end(loc(9, 23)),
+    ]);
+    assert_eq!(implicit_sequence, core_sequence);
+    assert_eq!(implicit_sequence, non_specific_sequence);
+
+    let implicit_mapping = captured_fingerprint(vec![
+        tagged_map_start(SfTag::None, None, loc(9, 24)),
+        map_end(loc(9, 25)),
+    ]);
+    let core_mapping = captured_fingerprint(vec![
+        tagged_map_start(SfTag::Map, Some("tag:yaml.org,2002:map"), loc(9, 26)),
+        map_end(loc(9, 27)),
+    ]);
+    let local_map_mapping = captured_fingerprint(vec![
+        tagged_map_start(SfTag::Map, Some("!map"), loc(9, 28)),
+        map_end(loc(9, 29)),
+    ]);
+    let non_specific_mapping = captured_fingerprint(vec![
+        tagged_map_start(SfTag::NonSpecific, Some("!"), loc(9, 30)),
+        map_end(loc(9, 31)),
+    ]);
+    assert_eq!(implicit_mapping, core_mapping);
+    assert_eq!(implicit_mapping, non_specific_mapping);
+    assert_ne!(local_map_mapping, core_mapping);
+    assert!(is_empty_mapping_key_fingerprint(&implicit_mapping));
+    assert!(!is_empty_mapping_key_fingerprint(&local_map_mapping));
+}
+
+#[test]
+fn capture_node_captures_nested_fingerprints_and_rejects_invalid_streams() {
+    let start = loc(15, 1);
+    let mut replay = replay_events(vec![
+        seq_start(SfTag::None, None, start),
+        scalar("a", SfTag::None, None, ScalarStyle::Plain, loc(15, 2)),
+        map_start(loc(15, 3)),
+        scalar("b", SfTag::None, None, ScalarStyle::Plain, loc(15, 4)),
+        scalar("c", SfTag::None, None, ScalarStyle::Plain, loc(15, 5)),
+        map_end(loc(15, 6)),
+        seq_end(loc(15, 7)),
+    ]);
+
+    match capture_node(&mut replay).unwrap() {
+        KeyNode::Fingerprinted {
+            fingerprint,
+            events,
+            location,
+        } => {
+            assert_eq!(location, start);
+            assert_eq!(events.len(), 7);
+            assert_eq!(
+                fingerprint,
+                KeyFingerprint::Sequence {
+                    tag: CanonicalKeyTag::Semantic(SfTag::Seq),
+                    elements: vec![
+                        KeyFingerprint::Scalar {
+                            value: Cow::Borrowed("a"),
+                            tag: CanonicalKeyTag::Semantic(SfTag::String),
+                        },
+                        KeyFingerprint::Mapping {
+                            tag: CanonicalKeyTag::Semantic(SfTag::Map),
+                            entries: vec![(
+                                KeyFingerprint::Scalar {
+                                    value: Cow::Borrowed("b"),
+                                    tag: CanonicalKeyTag::Semantic(SfTag::String),
+                                },
+                                KeyFingerprint::Scalar {
+                                    value: Cow::Borrowed("c"),
+                                    tag: CanonicalKeyTag::Semantic(SfTag::String),
+                                },
+                            )],
+                        },
+                    ],
+                }
+            );
+        }
+        KeyNode::Scalar { .. } => panic!("expected fingerprinted node"),
+    }
+
+    let mut unexpected_end = replay_events(vec![map_end(loc(16, 1))]);
+    let err = unwrap_err(capture_node(&mut unexpected_end));
+    assert!(matches!(
+        err,
+        Error::UnexpectedContainerEndWhileReadingKeyNode { location } if location == loc(16, 1)
+    ));
+
+    let mut taken = replay_events(vec![Ev::Taken {
+        location: loc(17, 1),
+    }]);
+    let err = unwrap_err(capture_node(&mut taken));
+    assert_eq!(err.location(), Some(loc(17, 1)));
+
+    let mut eof = replay_events(vec![seq_start(SfTag::None, None, loc(18, 1))]);
+    let err = unwrap_err(capture_node(&mut eof));
+    assert!(matches!(err, Error::Eof { location } if location == loc(18, 1)));
+}
+
+#[test]
+fn tagged_payload_helpers_strip_root_tags_and_build_external_map_events() {
+    let seq_loc = loc(19, 1);
+    let mut seq_payload = vec![
+        seq_start(SfTag::Other, Some("!SeqVariant"), seq_loc),
+        scalar("item", SfTag::None, None, ScalarStyle::Plain, loc(19, 2)),
+        seq_end(loc(19, 3)),
+    ];
+    strip_root_tag_for_externally_tagged_payload(&mut seq_payload);
+    match &seq_payload[0] {
+        Ev::SeqStart { tag, raw_tag, .. } => {
+            assert_eq!(*tag, SfTag::None);
+            assert!(raw_tag.is_none());
+        }
+        other => panic!("expected seq start, got {other:?}"),
+    }
+
+    let map_loc = loc(19, 4);
+    let mut map_payload = vec![
+        tagged_map_start(SfTag::Other, Some("!MapVariant"), map_loc),
+        scalar("key", SfTag::None, None, ScalarStyle::Plain, loc(19, 5)),
+        scalar("value", SfTag::None, None, ScalarStyle::Plain, loc(19, 6)),
+        map_end(loc(19, 7)),
+    ];
+    strip_root_tag_for_externally_tagged_payload(&mut map_payload);
+    match &map_payload[0] {
+        Ev::MapStart { tag, raw_tag, .. } => {
+            assert_eq!(*tag, SfTag::None);
+            assert!(raw_tag.is_none());
+        }
+        other => panic!("expected map start, got {other:?}"),
+    }
+
+    let wrapped = externally_tagged_payload_as_map_events("Empty".to_owned(), seq_loc, Vec::new());
+    assert!(matches!(
+        &wrapped[..],
+        [
+            Ev::MapStart { location, .. },
+            Ev::Scalar { value, tag: SfTag::String, raw_tag: None, .. },
+            Ev::MapEnd { location: end_location },
+        ] if *location == seq_loc && value.as_ref() == "Empty" && *end_location == seq_loc
+    ));
+
+    let scalar_loc = loc(20, 1);
+    let mut replay = replay_events(vec![scalar(
+        "payload",
+        SfTag::Other,
+        Some("!Variant"),
+        ScalarStyle::Plain,
+        scalar_loc,
+    )]);
+    let captured = capture_simple_tagged_node_as_map_events(&mut replay)
+        .unwrap()
+        .expect("tagged node should be converted");
+    assert!(
+        matches!(captured.first(), Some(Ev::MapStart { location, .. }) if *location == scalar_loc)
+    );
+    assert!(matches!(
+        captured.get(1),
+        Some(Ev::Scalar { value, tag: SfTag::String, raw_tag: None, .. }) if value.as_ref() == "Variant"
+    ));
+    match captured.get(2) {
+        Some(Ev::Scalar {
+            value,
+            tag,
+            raw_tag,
+            location,
+            ..
+        }) => {
+            assert_eq!(value.as_ref(), "payload");
+            assert_eq!(*tag, SfTag::None);
+            assert!(raw_tag.is_none());
+            assert_eq!(*location, scalar_loc);
+        }
+        other => panic!("expected payload scalar, got {other:?}"),
+    }
+    assert!(matches!(
+        captured.last(),
+        Some(Ev::MapEnd { location }) if *location == scalar_loc
+    ));
+
+    let mut untagged = replay_events(vec![scalar(
+        "payload",
+        SfTag::String,
+        None,
+        ScalarStyle::Plain,
+        scalar_loc,
+    )]);
+    assert!(
+        capture_simple_tagged_node_as_map_events(&mut untagged)
+            .unwrap()
+            .is_none()
+    );
+
+    let tagged_map_loc = loc(20, 2);
+    let mut tagged_map = replay_events(vec![
+        tagged_map_start(SfTag::Other, Some("!Mapping"), tagged_map_loc),
+        scalar("key", SfTag::None, None, ScalarStyle::Plain, loc(20, 3)),
+        scalar("value", SfTag::None, None, ScalarStyle::Plain, loc(20, 4)),
+        map_end(loc(20, 5)),
+    ]);
+    let captured = capture_simple_tagged_node_as_map_events(&mut tagged_map)
+        .unwrap()
+        .expect("tagged mapping should be converted");
+    assert!(matches!(
+        captured.get(1),
+        Some(Ev::Scalar { value, .. }) if value.as_ref() == "Mapping"
+    ));
+    assert!(matches!(
+        captured.get(2),
+        Some(Ev::MapStart {
+            tag: SfTag::None,
+            raw_tag: None,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn is_merge_key_accepts_implicit_and_explicit_merge_tags() {
+    assert!(is_merge_key(&scalar_key_node(
+        "<<",
+        SfTag::None,
+        ScalarStyle::Plain,
+        loc(21, 1)
+    )));
+    assert!(!is_merge_key(&scalar_key_node(
+        "<<",
+        SfTag::String,
+        ScalarStyle::Plain,
+        loc(21, 2)
+    )));
+    assert!(!is_merge_key(&scalar_key_node(
+        "<<",
+        SfTag::None,
+        ScalarStyle::SingleQuoted,
+        loc(21, 3)
+    )));
+    assert!(is_merge_key(&scalar_key_node(
+        "<<",
+        SfTag::Merge,
+        ScalarStyle::Plain,
+        loc(21, 4)
+    )));
+    assert!(is_merge_key(&scalar_key_node(
+        "<<",
+        SfTag::Merge,
+        ScalarStyle::SingleQuoted,
+        loc(21, 5)
+    )));
+    assert!(!is_merge_key(&scalar_key_node(
+        "not-merge",
+        SfTag::Merge,
+        ScalarStyle::Plain,
+        loc(21, 6)
+    )));
+    assert!(!is_merge_key(&KeyNode::Fingerprinted {
+        fingerprint: KeyFingerprint::Default,
+        events: vec![map_start(loc(21, 7)), map_end(loc(21, 8))],
+        location: loc(21, 7),
+    }));
+}
+
+#[test]
+fn pending_entries_from_events_handles_scalars_maps_sequences_and_eof() {
+    let reference = loc(22, 9);
+
+    let null_entries = pending_from_events(
+        vec![scalar(
+            "null",
+            SfTag::None,
+            None,
+            ScalarStyle::Plain,
+            loc(22, 1),
+        )],
+        loc(22, 1),
+        reference,
+    )
+    .unwrap();
+    assert!(null_entries.is_empty());
+
+    let err = unwrap_err(pending_from_events(
+        vec![scalar(
+            "42",
+            SfTag::None,
+            None,
+            ScalarStyle::Plain,
+            loc(23, 1),
+        )],
+        loc(23, 1),
+        reference,
+    ));
+    assert!(matches!(
+        err,
+        Error::MergeValueNotMapOrSeqOfMaps { location } if location == loc(23, 1)
+    ));
+
+    let map_entries = pending_from_events(
+        vec![
+            map_start(loc(24, 1)),
+            scalar("a", SfTag::None, None, ScalarStyle::Plain, loc(24, 2)),
+            scalar("1", SfTag::None, None, ScalarStyle::Plain, loc(24, 3)),
+            map_end(loc(24, 4)),
+        ],
+        loc(24, 1),
+        reference,
+    )
+    .unwrap();
+    assert_eq!(map_entries.len(), 1);
+    assert_eq!(
+        pending_pair(&map_entries[0]),
+        ("a".to_owned(), "1".to_owned(), reference)
+    );
+
+    let seq_entries = pending_from_events(
+        vec![
+            seq_start(SfTag::None, None, loc(25, 1)),
+            map_start(loc(25, 2)),
+            scalar("first", SfTag::None, None, ScalarStyle::Plain, loc(25, 3)),
+            scalar("1", SfTag::None, None, ScalarStyle::Plain, loc(25, 4)),
+            map_end(loc(25, 5)),
+            map_start(loc(26, 2)),
+            scalar("second", SfTag::None, None, ScalarStyle::Plain, loc(26, 3)),
+            scalar("2", SfTag::None, None, ScalarStyle::Plain, loc(26, 4)),
+            map_end(loc(26, 5)),
+            seq_end(loc(27, 1)),
+        ],
+        loc(25, 1),
+        reference,
+    )
+    .unwrap();
+    assert_eq!(seq_entries.len(), 2);
+    assert_eq!(
+        pending_pair(&seq_entries[0]),
+        ("first".to_owned(), "1".to_owned(), reference)
+    );
+    assert_eq!(
+        pending_pair(&seq_entries[1]),
+        ("second".to_owned(), "2".to_owned(), reference)
+    );
+
+    let err = unwrap_err(pending_from_events(Vec::new(), loc(28, 1), reference));
+    assert!(matches!(err, Error::Eof { location } if location == loc(28, 1)));
+}
+
+#[test]
+fn pending_entries_from_live_events_handles_null_scalars_sequences_and_eof() {
+    let merge_reference = loc(29, 9);
+
+    let mut null_replay = replay_events(vec![scalar(
+        "~",
+        SfTag::None,
+        None,
+        ScalarStyle::Plain,
+        loc(29, 1),
+    )]);
+    assert!(
+        pending_entries_from_live_events(
+            &mut null_replay,
+            merge_reference,
+            MergeKeyPolicy::Merge,
+            DuplicateKeyPolicy::Error,
+            false,
+        )
+        .unwrap()
+        .is_empty()
+    );
+
+    let mut scalar_replay = replay_events(vec![scalar(
+        "42",
+        SfTag::None,
+        None,
+        ScalarStyle::Plain,
+        loc(30, 1),
+    )]);
+    let err = unwrap_err(pending_entries_from_live_events(
+        &mut scalar_replay,
+        merge_reference,
+        MergeKeyPolicy::Merge,
+        DuplicateKeyPolicy::Error,
+        false,
+    ));
+    assert!(matches!(
+        err,
+        Error::MergeValueNotMapOrSeqOfMaps { location } if location == loc(30, 1)
+    ));
+
+    let mut seq_replay = replay_events(vec![
+        seq_start(SfTag::None, None, loc(31, 1)),
+        map_start(loc(31, 2)),
+        scalar("a", SfTag::None, None, ScalarStyle::Plain, loc(31, 3)),
+        scalar("1", SfTag::None, None, ScalarStyle::Plain, loc(31, 4)),
+        map_end(loc(31, 5)),
+        map_start(loc(32, 2)),
+        scalar("b", SfTag::None, None, ScalarStyle::Plain, loc(32, 3)),
+        scalar("2", SfTag::None, None, ScalarStyle::Plain, loc(32, 4)),
+        map_end(loc(32, 5)),
+        seq_end(loc(33, 1)),
+    ]);
+    let entries = pending_entries_from_live_events(
+        &mut seq_replay,
+        merge_reference,
+        MergeKeyPolicy::Merge,
+        DuplicateKeyPolicy::Error,
+        false,
+    )
+    .unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        pending_pair(&entries[0]),
+        ("a".to_owned(), "1".to_owned(), loc(31, 2))
+    );
+    assert_eq!(
+        pending_pair(&entries[1]),
+        ("b".to_owned(), "2".to_owned(), loc(32, 2))
+    );
+
+    let mut empty = replay_events(Vec::new());
+    let err = unwrap_err(pending_entries_from_live_events(
+        &mut empty,
+        merge_reference,
+        MergeKeyPolicy::Merge,
+        DuplicateKeyPolicy::Error,
+        false,
+    ));
+    assert!(matches!(err, Error::Eof { location } if location == Location::UNKNOWN));
+}
+
+#[test]
+fn collect_entries_from_map_expands_merges_and_preserves_reference_locations() {
+    let mut not_a_map = replay_events(vec![scalar(
+        "oops",
+        SfTag::None,
+        None,
+        ScalarStyle::Plain,
+        loc(34, 1),
+    )]);
+    let err = unwrap_err(collect_entries_from_map(
+        &mut not_a_map,
+        loc(34, 9),
+        MergeKeyPolicy::Merge,
+        DuplicateKeyPolicy::Error,
+        false,
+    ));
+    assert!(matches!(
+        err,
+        Error::MergeValueNotMapOrSeqOfMaps { location } if location == loc(34, 1)
+    ));
+
+    let outer_reference = loc(35, 9);
+    let merge_value_location = loc(35, 3);
+    let mut replay = replay_events(vec![
+        map_start(loc(35, 1)),
+        scalar("<<", SfTag::None, None, ScalarStyle::Plain, loc(35, 2)),
+        map_start(merge_value_location),
+        scalar("base", SfTag::None, None, ScalarStyle::Plain, loc(35, 4)),
+        scalar("1", SfTag::None, None, ScalarStyle::Plain, loc(35, 5)),
+        map_end(loc(35, 6)),
+        scalar("own", SfTag::None, None, ScalarStyle::Plain, loc(35, 7)),
+        scalar("2", SfTag::None, None, ScalarStyle::Plain, loc(35, 8)),
+        map_end(loc(35, 10)),
+    ]);
+
+    let entries = collect_entries_from_map(
+        &mut replay,
+        outer_reference,
+        MergeKeyPolicy::Merge,
+        DuplicateKeyPolicy::Error,
+        false,
+    )
+    .unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        pending_pair(&entries[0]),
+        ("own".to_owned(), "2".to_owned(), outer_reference)
+    );
+    assert_eq!(
+        pending_pair(&entries[1]),
+        ("base".to_owned(), "1".to_owned(), merge_value_location)
+    );
+}
+
+#[test]
+fn collect_entries_from_map_treats_merge_key_as_ordinary_under_policy() {
+    let reference = loc(36, 9);
+    let mut replay = replay_events(vec![
+        map_start(loc(36, 1)),
+        scalar("<<", SfTag::None, None, ScalarStyle::Plain, loc(36, 2)),
+        scalar("1", SfTag::None, None, ScalarStyle::Plain, loc(36, 3)),
+        map_end(loc(36, 4)),
+    ]);
+
+    let entries = collect_entries_from_map(
+        &mut replay,
+        reference,
+        MergeKeyPolicy::AsOrdinary,
+        DuplicateKeyPolicy::Error,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        pending_pair(&entries[0]),
+        ("<<".to_owned(), "1".to_owned(), reference)
+    );
+}
+
+#[test]
+fn collect_entries_from_map_rejects_merge_key_under_error_policy() {
+    let mut replay = replay_events(vec![
+        map_start(loc(37, 1)),
+        scalar("<<", SfTag::None, None, ScalarStyle::Plain, loc(37, 2)),
+        scalar("1", SfTag::None, None, ScalarStyle::Plain, loc(37, 3)),
+        map_end(loc(37, 4)),
+    ]);
+
+    let err = unwrap_err(collect_entries_from_map(
+        &mut replay,
+        loc(37, 9),
+        MergeKeyPolicy::Error,
+        DuplicateKeyPolicy::Error,
+        false,
+    ));
+
+    assert!(matches!(
+        err,
+        Error::MergeKeyNotAllowed { location } if location == loc(37, 2)
+    ));
+}
+
+#[test]
+fn capture_node_reports_eof_at_root_and_inside_mapping() {
+    let mut empty = replay_events(Vec::new());
+    let err = unwrap_err(capture_node(&mut empty));
+    assert!(matches!(
+        err,
+        Error::Eof { location } if location == Location::UNKNOWN
+    ));
+
+    let mut unterminated_map = replay_events(vec![
+        map_start(loc(42, 1)),
+        scalar("key", SfTag::None, None, ScalarStyle::Plain, loc(42, 2)),
+        scalar("value", SfTag::None, None, ScalarStyle::Plain, loc(42, 3)),
+    ]);
+    let err = unwrap_err(capture_node(&mut unterminated_map));
+    assert!(matches!(
+        err,
+        Error::Eof { location } if location == loc(42, 3)
+    ));
+}
+
+#[test]
+fn merge_key_validator_reports_malformed_recorded_nodes() {
+    let err = unwrap_err(validate_no_merge_keys_in_node_events(&[]));
+    assert!(matches!(
+        err,
+        Error::Eof { location } if location == Location::UNKNOWN
+    ));
+
+    let err = unwrap_err(validate_no_merge_keys_in_node_events(&[
+        seq_start(SfTag::None, None, loc(43, 1)),
+        map_end(loc(43, 2)),
+    ]));
+    assert!(matches!(
+        err,
+        Error::UnexpectedContainerEndWhileSkippingNode { location }
+            if location == loc(43, 2)
+    ));
+
+    let err = unwrap_err(validate_no_merge_keys_in_node_events(&[
+        map_start(loc(44, 1)),
+        seq_end(loc(44, 2)),
+    ]));
+    assert!(matches!(
+        err,
+        Error::UnexpectedContainerEndWhileSkippingNode { location }
+            if location == loc(44, 2)
+    ));
+
+    let err = unwrap_err(validate_no_merge_keys_in_node_events(&[
+        map_start(loc(45, 1)),
+        scalar("key", SfTag::None, None, ScalarStyle::Plain, loc(45, 2)),
+        scalar("value", SfTag::None, None, ScalarStyle::Plain, loc(45, 3)),
+    ]));
+    assert!(matches!(
+        err,
+        Error::Eof { location } if location == loc(45, 3)
+    ));
+
+    let err = unwrap_err(validate_no_merge_keys_in_node_events(&[Ev::Taken {
+        location: loc(46, 1),
+    }]));
+    assert_eq!(err.location(), Some(loc(46, 1)));
+
+    let err = unwrap_err(validate_no_merge_keys_in_node_events(&[
+        scalar("one", SfTag::None, None, ScalarStyle::Plain, loc(47, 1)),
+        scalar("two", SfTag::None, None, ScalarStyle::Plain, loc(47, 2)),
+    ]));
+    assert!(matches!(
+        err,
+        Error::Unexpected { location, .. } if location == loc(47, 2)
+    ));
+}
+
+#[test]
+fn duplicate_filter_validates_discarded_values_when_merges_are_forbidden() {
+    let mut replay = replay_events(vec![
+        map_start(loc(48, 1)),
+        scalar("same", SfTag::None, None, ScalarStyle::Plain, loc(48, 2)),
+        scalar("kept", SfTag::None, None, ScalarStyle::Plain, loc(48, 3)),
+        scalar("same", SfTag::None, None, ScalarStyle::Plain, loc(48, 4)),
+        map_start(loc(48, 5)),
+        scalar("<<", SfTag::None, None, ScalarStyle::Plain, loc(48, 6)),
+        map_start(loc(48, 7)),
+        scalar("admin", SfTag::None, None, ScalarStyle::Plain, loc(48, 8)),
+        scalar("true", SfTag::None, None, ScalarStyle::Plain, loc(48, 9)),
+        map_end(loc(48, 10)),
+        map_end(loc(48, 11)),
+        map_end(loc(48, 12)),
+    ]);
+
+    let err = unwrap_err(collect_entries_from_map(
+        &mut replay,
+        loc(48, 1),
+        MergeKeyPolicy::Error,
+        DuplicateKeyPolicy::FirstWins,
+        false,
+    ));
+    assert!(matches!(
+        err,
+        Error::MergeKeyNotAllowed { location } if location == loc(48, 6)
+    ));
+}

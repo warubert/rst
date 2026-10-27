@@ -1,0 +1,23 @@
+Source: rst
+Section: utils
+Priority: optional
+Maintainer: William Antunes Rubert <william.rubert@gmail.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ build-essential,
+ cargo (>= 1.85),
+ rustc (>= 1.85),
+ cmake,
+ pkg-config
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+Homepage: https://github.com/warubert/rst
+Vcs-Browser: https://github.com/warubert/rst
+Vcs-Git: https://github.com/warubert/rst.git
+
+Package: rst
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: terminal tool to extract and translate video subtitles
+ RST is an interactive terminal application for extracting subtitles from
+ video files and translating them.

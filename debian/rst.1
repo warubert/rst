@@ -1,0 +1,34 @@
+.TH RST 1 "October 2026" "rst 1.0.0" "User Commands"
+.SH NAME
+rst \- extract and translate subtitles from video files
+.SH SYNOPSIS
+.B rst
+.SH DESCRIPTION
+RST is an interactive terminal application for extracting subtitles from
+video files and translating them.
+.PP
+Run
+.B rst
+without arguments to open the menu. Use the arrow keys to navigate and Enter
+to select an action.
+.SH FEATURES
+.TP
+.B Extract subtitles
+Select a video, choose a subtitle track, and save it as an SRT file.
+.TP
+.B Extract and translate
+Extract a subtitle track and create a translated SRT file.
+.TP
+.B Generate subtitles with Whisper
+Generate an SRT file from spoken audio using the Whisper command-line tool.
+.SH FILES
+.TP
+.I ~/.config/rst/
+User settings are stored here by default. If XDG_CONFIG_HOME is set, the
+configuration directory is
+.I $XDG_CONFIG_HOME/rst/
+instead.
+.SH SEE ALSO
+The project README at
+.UR https://github.com/warubert/rst
+.UE

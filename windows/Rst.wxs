@@ -10,6 +10,8 @@
     <MediaTemplate EmbedCab="yes" />
     <Feature Id="Main" Title="RST" Level="1">
       <ComponentRef Id="RstExecutable" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
     </Feature>
   </Package>
 
@@ -37,6 +39,46 @@
         Part="last"
         Action="set"
         System="yes" />
+    </Component>
+  </Fragment>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="RST" />
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+  </Fragment>
+
+  <Fragment>
+    <Component Id="StartMenuShortcut" Directory="ApplicationProgramsFolder" Guid="*">
+      <Shortcut
+        Id="StartMenuShortcut"
+        Name="RST"
+        Target="[#RstExe]"
+        WorkingDirectory="INSTALLFOLDER" />
+      <RemoveFolder Id="RemoveStartMenuFolder" On="uninstall" />
+      <RegistryValue
+        Root="HKLM"
+        Key="Software\RST"
+        Name="StartMenuShortcut"
+        Type="integer"
+        Value="1"
+        KeyPath="yes" />
+    </Component>
+
+    <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="*">
+      <Shortcut
+        Id="DesktopShortcut"
+        Name="RST"
+        Target="[#RstExe]"
+        WorkingDirectory="INSTALLFOLDER" />
+      <RegistryValue
+        Root="HKLM"
+        Key="Software\RST"
+        Name="DesktopShortcut"
+        Type="integer"
+        Value="1"
+        KeyPath="yes" />
     </Component>
   </Fragment>
 </Wix>

@@ -177,9 +177,32 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.dotnet\tools"
 
       - name: Package ZIP and MSI
+        env:
+          WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
           $exe = (Resolve-Path "target/${{ matrix.rust_target }}/release/rst.exe").Path
+
+          $signing = -not [string]::IsNullOrEmpty($env:WINDOWS_CERTIFICATE_PFX_BASE64)
+          function Sign-File($path) {
+            if (-not $signing) { return }
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD `
+              /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /d "RST" $path
+            if ($LASTEXITCODE -ne 0) { throw "Failed to sign $path" }
+            & $signtool.FullName verify /pa $path
+            if ($LASTEXITCODE -ne 0) { throw "Signature verification failed for $path" }
+          }
+          if ($signing) {
+            $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX_BASE64))
+          } elseif ($env:GITHUB_REF -like "refs/tags/v*") {
+            Write-Warning "Windows signing certificate not configured; publishing unsigned packages."
+          }
+          Sign-File $exe
+
           $staging = "dist/rst_windows_${{ matrix.architecture }}"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           Copy-Item $exe "$staging/rst.exe"
@@ -191,6 +214,8 @@ jobs:
             -d "Architecture=${{ matrix.wix_architecture }}" `
             -d "RstExe=$exe" `
             -out "rst_windows_${{ matrix.architecture }}.msi"
+          Sign-File (Resolve-Path "rst_windows_${{ matrix.architecture }}.msi").Path
+          if ($signing) { Remove-Item $pfx -Force }
 
       - name: Upload Windows packages
         if: startsWith(github.ref, 'refs/tags/v')

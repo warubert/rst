@@ -284,6 +284,39 @@ jobs:
 
           cp "$executable" "$pkg_root/usr/local/bin/rst"
           cp README.md LICENSE "$pkg_root/usr/local/share/doc/rst/"
+
+          app="$pkg_root/Applications/RST.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          iconset="$(mktemp -d)/rst.iconset"
+          mkdir -p "$iconset"
+          for size in 16 32 128 256 512; do
+            sips -z $size $size assets/rst-icon-1024.png --out "$iconset/icon_${size}x${size}.png" >/dev/null
+            sips -z $((size * 2)) $((size * 2)) assets/rst-icon-1024.png --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+          done
+          iconutil -c icns "$iconset" -o "$app/Contents/Resources/rst.icns"
+          cat > "$app/Contents/MacOS/RST" <<'LAUNCHER'
+          #!/bin/bash
+          osascript -e 'tell application "Terminal"' -e 'activate' -e 'do script "/usr/local/bin/rst"' -e 'end tell'
+          LAUNCHER
+          chmod +x "$app/Contents/MacOS/RST"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>RST</string>
+            <key>CFBundleDisplayName</key><string>RST</string>
+            <key>CFBundleIdentifier</key><string>com.warubert.rst.app</string>
+            <key>CFBundleExecutable</key><string>RST</string>
+            <key>CFBundleIconFile</key><string>rst</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$version</string>
+            <key>CFBundleVersion</key><string>$version</string>
+            <key>LSMinimumSystemVersion</key><string>10.13</string>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint "$app/Contents/Info.plist"
           pkgbuild \
             --root "$pkg_root" \
             --identifier com.warubert.rst \

@@ -196,3 +196,5 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 ### Em desenvolvimento
 
 - melhorar readme e traduzir para en e es
+- ajustar whisper no windows/mac(?)
+- ajustar seleçao de pasta do instaladdor windows/mac(?)

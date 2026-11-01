@@ -224,7 +224,23 @@ fn transcribe_on_device(
     let generated_name = input_output
         .file_name()
         .unwrap_or_else(|| Path::new("transcription.srt").as_os_str());
-    Ok(output_directory.join(generated_name))
+    let expected = output_directory.join(generated_name);
+    let generated = find_generated_srt(output_directory).unwrap_or(expected);
+    if !generated.is_file() {
+        return Err(t!("errors.whisper_no_output", stderr = stderr_lines.join("\n")).to_string());
+    }
+    Ok(generated)
+}
+
+fn find_generated_srt(directory: &Path) -> Option<PathBuf> {
+    fs::read_dir(directory)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("srt"))
+        })
 }
 
 fn is_unsupported_cuda_error(error: &str) -> bool {
@@ -265,7 +281,7 @@ fn transcribe(
             result => result,
         }
         .and_then(|generated| publish_output(&generated, output));
-    let _ = fs::remove_dir(&output_directory);
+    let _ = fs::remove_dir_all(&output_directory);
     result
 }
 
@@ -299,7 +315,7 @@ fn create_staging_directory(output: &Path) -> Result<PathBuf, String> {
 }
 
 fn publish_output(generated: &Path, output: &Path) -> Result<PathBuf, String> {
-    fs::rename(generated, output).map_err(|error| {
+    let publish_error = |error: std::io::Error| {
         t!(
             "errors.whisper_publish",
             generated = generated.display(),
@@ -307,7 +323,11 @@ fn publish_output(generated: &Path, output: &Path) -> Result<PathBuf, String> {
             error = error
         )
         .to_string()
-    })?;
+    };
+    if fs::rename(generated, output).is_err() {
+        fs::copy(generated, output).map_err(publish_error)?;
+        let _ = fs::remove_file(generated);
+    }
     Ok(output.to_path_buf())
 }
 

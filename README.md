@@ -38,7 +38,7 @@ O idioma escolhido em **Opções** é salvo nas configurações do usuário e te
 
 Também é necessário ter o Rust e o Cargo instalados para compilar o projeto.
 
-Para criar legendas com Whisper, instale o [OpenAI Whisper](https://github.com/openai/whisper) e deixe os comandos `whisper` e `ffmpeg` disponíveis no `PATH` (por exemplo, `pip install -U openai-whisper` e `sudo apt install ffmpeg`). Essa opção fica indisponível se o comando Whisper não puder ser executado; o FFmpeg é usado pelo Whisper para ler o áudio.
+Para criar legendas com Whisper, instale o [OpenAI Whisper](https://github.com/openai/whisper) e deixe os comandos `whisper` e `ffmpeg` disponíveis no `PATH` (por exemplo, `pip install -U openai-whisper` e `sudo apt install ffmpeg`; no Windows, `winget install Gyan.FFmpeg`). Reabra o terminal depois de instalar para atualizar o `PATH`. Essa opção fica indisponível se o comando Whisper não puder ser executado; o FFmpeg é usado pelo Whisper para ler o áudio.
 
 ## Testes
 
@@ -187,5 +187,4 @@ cargo test translates_the_sample_file_without_an_api_key -- --ignored
 ### Em desenvolvimento
 
 - melhorar readme e traduzir para en e es
-- ajustar whisper no windows/mac(?)
 - ajustar seleçao de pasta do instaladdor windows/mac(?)

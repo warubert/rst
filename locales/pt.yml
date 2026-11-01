@@ -103,6 +103,7 @@ errors:
   whisper_cpu_fallback_failed: "A GPU não é compatível (%{gpu_error}) e a tentativa em CPU também falhou:\n%{cpu_error}"
   whisper_output_directory: "Não foi possível preparar a pasta de saída %{path}: %{error}"
   whisper_output_directory_exists: "Não foi possível criar uma pasta temporária de saída exclusiva."
+  whisper_no_output: "O Whisper terminou sem gerar a legenda. Verifique se o FFmpeg está instalado e disponível no PATH.\n%{stderr}"
   whisper_publish: "Não foi possível salvar a legenda gerada de %{generated} em %{output}: %{error}"
   file_picker_start: "Não foi possível encontrar a pasta atual: %{error}"
   file_picker_read: "Não foi possível ler %{path}: %{error}"

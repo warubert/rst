@@ -95,6 +95,7 @@ errors:
   whisper_cpu_fallback_failed: "La GPU no es compatible (%{gpu_error}) y el intento en CPU también falló:\n%{cpu_error}"
   whisper_output_directory: "No se pudo preparar la carpeta de salida %{path}: %{error}"
   whisper_output_directory_exists: "No se pudo crear una carpeta temporal de salida exclusiva."
+  whisper_no_output: "Whisper terminó sin generar el subtítulo. Verifique que FFmpeg esté instalado y disponible en el PATH.\n%{stderr}"
   whisper_publish: "No se pudo guardar el subtítulo generado de %{generated} en %{output}: %{error}"
   file_picker_start: "No se pudo localizar la carpeta actual: %{error}"
   file_picker_read: "No se pudo leer %{path}: %{error}"

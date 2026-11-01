@@ -25,13 +25,8 @@ Para baixar versões anteriores, consulte [todas as releases](https://github.com
 ## Funcionalidades
 
 - Detecta as faixas de legenda disponíveis em um arquivo de vídeo
-- Permite selecionar a faixa a extrair
 - Salva a legenda selecionada em formato `.srt`
-- Oferece uma interface interativa de terminal com Ratatui
-- Permite navegar por pastas e selecionar arquivos de vídeo e `.srt` na interface
 - Disponibiliza a interface em português, inglês e espanhol
-- Detecta o idioma do sistema na primeira execução e permite alterá-lo em **Opções**
-- Usa inglês quando o idioma do sistema não é português, inglês ou espanhol
 - Traduz arquivos `.srt` pelo serviço de tradução do Google, dividindo legendas grandes em várias requisições assíncronas
 - Extrai e traduz uma faixa de legenda do vídeo em um único fluxo
 - Cria legendas `.srt` com Whisper a partir do áudio do vídeo

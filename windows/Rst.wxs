@@ -30,8 +30,8 @@
     <!-- Heuristic hint on the final screen: looks for "ffmpeg" in the installer's PATH -->
     <Property Id="RST_CURRENT_PATH" Secure="yes" />
     <SetProperty Id="RST_CURRENT_PATH" Value="[%PATH]" Before="CostFinalize" Sequence="ui" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="To create subtitles with Whisper, also install OpenAI Whisper (pip install -U openai-whisper) if you do not have it yet." />
     <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="Warning: FFmpeg was not found in PATH. To create subtitles with Whisper, install FFmpeg (winget install Gyan.FFmpeg) and OpenAI Whisper (pip install -U openai-whisper), then reopen your terminal." Before="CostFinalize" Sequence="ui" Condition="NOT (RST_CURRENT_PATH ~&gt;&lt; &quot;ffmpeg&quot;)" />
-    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="To create subtitles with Whisper, also install OpenAI Whisper (pip install -U openai-whisper) if you do not have it yet." Before="CostFinalize" Sequence="ui" Condition="RST_CURRENT_PATH ~&gt;&lt; &quot;ffmpeg&quot;" />
   </Package>
 
   <Fragment>

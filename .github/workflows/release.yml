@@ -286,17 +286,16 @@ jobs:
           zip_root="dist/rst_macos_${{ matrix.architecture }}"
           pkg_root="pkg-root-${{ matrix.architecture }}"
 
-          mkdir -p "$zip_root" "$pkg_root/usr/local/bin" "$pkg_root/usr/local/share/doc/rst"
+          mkdir -p "$zip_root" "$pkg_root"
           cp "$executable" "$zip_root/rst"
           cp README.md LICENSE "$zip_root/"
           ditto -c -k --sequesterRsrc --keepParent "$zip_root" \
             "rst_macos_${{ matrix.architecture }}.zip"
 
-          cp "$executable" "$pkg_root/usr/local/bin/rst"
-          cp README.md LICENSE "$pkg_root/usr/local/share/doc/rst/"
-
-          app="$pkg_root/Applications/RST.app"
+          app="$pkg_root/RST.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp "$executable" "$app/Contents/MacOS/rst"
+          cp README.md LICENSE "$app/Contents/Resources/"
           iconset="$(mktemp -d)/rst.iconset"
           mkdir -p "$iconset"
           for size in 16 32 128 256 512; do
@@ -306,9 +305,12 @@ jobs:
           iconutil -c icns "$iconset" -o "$app/Contents/Resources/rst.icns"
           cat > "$app/Contents/MacOS/RST" <<'LAUNCHER'
           #!/bin/bash
-          osascript -e 'tell application "Terminal"' -e 'activate' -e 'do script "/usr/local/bin/rst"' -e 'end tell'
+          dir="$(cd "$(dirname "$0")" && pwd)"
+          osascript -e 'tell application "Terminal"' -e 'activate' -e "do script quoted form of \"$dir/rst\"" -e 'end tell'
           LAUNCHER
           chmod +x "$app/Contents/MacOS/RST"
+          cp macos/uninstall.sh "$app/Contents/Resources/uninstall.sh"
+          chmod +x "$app/Contents/Resources/uninstall.sh"
           cat > "$app/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -327,11 +329,49 @@ jobs:
           </plist>
           PLIST
           plutil -lint "$app/Contents/Info.plist"
+
+          scripts="pkg-scripts-${{ matrix.architecture }}"
+          mkdir -p "$scripts"
+          cat > "$scripts/postinstall" <<'POSTINSTALL'
+          #!/bin/bash
+          # $2 é a pasta de instalação escolhida pelo usuário
+          mkdir -p /usr/local/bin
+          ln -sf "$2/RST.app/Contents/MacOS/rst" /usr/local/bin/rst
+          ln -sf "$2/RST.app/Contents/Resources/uninstall.sh" /usr/local/bin/rst-uninstall
+          exit 0
+          POSTINSTALL
+          chmod +x "$scripts/postinstall"
+
           pkgbuild \
             --root "$pkg_root" \
             --identifier com.warubert.rst \
             --version "$version" \
-            --install-location / \
+            --install-location /Applications \
+            --scripts "$scripts" \
+            "rst-component-${{ matrix.architecture }}.pkg"
+
+          cat > distribution.xml <<DIST
+          <?xml version="1.0" encoding="utf-8"?>
+          <installer-gui-script minSpecVersion="2">
+            <title>RST</title>
+            <license file="LICENSE"/>
+            <conclusion file="conclusion.html"/>
+            <options customize="always" require-scripts="false" hostArchitectures="${{ matrix.rust_target == 'aarch64-apple-darwin' && 'arm64' || 'x86_64' }}"/>
+            <domains enable_anywhere="false" enable_localSystem="true" enable_currentUserHome="false"/>
+            <choices-outline><line choice="rst"/></choices-outline>
+            <choice id="rst" title="RST" customLocation="/Applications" customLocationAllowAlternateVolumes="false">
+              <pkg-ref id="com.warubert.rst"/>
+            </choice>
+            <pkg-ref id="com.warubert.rst" version="$version">rst-component-${{ matrix.architecture }}.pkg</pkg-ref>
+          </installer-gui-script>
+          DIST
+          mkdir -p pkg-resources
+          cp LICENSE pkg-resources/LICENSE
+          cp macos/conclusion.html pkg-resources/conclusion.html
+          productbuild \
+            --distribution distribution.xml \
+            --resources pkg-resources \
+            --package-path . \
             "rst_macos_${{ matrix.architecture }}.pkg"
 
       - name: Upload macOS packages

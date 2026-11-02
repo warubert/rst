@@ -1,84 +1,97 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package
     Name="RST"
     Manufacturer="William Antunes Rubert"
     Version="$(var.ProductVersion)"
-    UpgradeCode="{F4C30D48-8D24-4E78-B34A-A7A139A5310B}"
-    Scope="perMachine"
+    UpgradeCode="{6D0B7B7E-3C5A-4C57-9E43-2F0B0A6B9C11}"
+    Scope="perUser"
+    Language="1033"
     InstallerVersion="500">
     <MajorUpgrade DowngradeErrorMessage="A newer version of RST is already installed." />
     <MediaTemplate EmbedCab="yes" />
-    <Feature Id="Main" Title="RST" Level="1">
+    <Icon Id="RstIcon.ico" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="RstIcon.ico" />
+
+    <Feature Id="Main" Title="RST" Level="1" AllowAbsent="no" ConfigurableDirectory="INSTALLFOLDER">
       <ComponentRef Id="RstExecutable" />
+      <ComponentRef Id="RstLauncher" />
       <ComponentRef Id="StartMenuShortcut" />
-      <ComponentRef Id="DesktopShortcut" />
+      <Feature Id="DesktopShortcutFeature" Title="Desktop shortcut" Level="1" AllowAbsent="yes">
+        <ComponentRef Id="DesktopShortcut" />
+      </Feature>
+      <Feature Id="AddToPathFeature" Title="Add RST to PATH (run &quot;rst&quot; from a terminal)" Level="1" AllowAbsent="yes">
+        <ComponentRef Id="AddToPath" />
+      </Feature>
     </Feature>
+
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+    <ui:WixUI Id="WixUI_FeatureTree" />
+
+    <!-- Heuristic hint on the final screen: looks for "ffmpeg" in the installer's PATH -->
+    <Property Id="RST_CURRENT_PATH" Secure="yes" />
+    <SetProperty Id="RST_CURRENT_PATH" Value="[%PATH]" Before="CostFinalize" Sequence="ui" />
+    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="Warning: FFmpeg was not found in PATH. To create subtitles with Whisper, install FFmpeg (winget install Gyan.FFmpeg) and OpenAI Whisper (pip install -U openai-whisper), then reopen your terminal." Before="CostFinalize" Sequence="ui" Condition="NOT (RST_CURRENT_PATH ~&gt;&lt; &quot;ffmpeg&quot;)" />
+    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="To create subtitles with Whisper, also install OpenAI Whisper (pip install -U openai-whisper) if you do not have it yet." Before="CostFinalize" Sequence="ui" Condition="RST_CURRENT_PATH ~&gt;&lt; &quot;ffmpeg&quot;" />
   </Package>
 
-  <?if $(var.Architecture) = x64 ?>
   <Fragment>
-    <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="RST" />
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="UserProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="RST" />
+      </Directory>
     </StandardDirectory>
-  </Fragment>
-  <?else ?>
-  <Fragment>
-    <StandardDirectory Id="ProgramFilesFolder">
-      <Directory Id="INSTALLFOLDER" Name="RST" />
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="RST" />
     </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+    <StandardDirectory Id="PersonalFolder" />
   </Fragment>
-  <?endif ?>
 
   <Fragment>
-    <Component Id="RstExecutable" Directory="INSTALLFOLDER" Guid="*">
-      <File Id="RstExe" Source="$(var.RstExe)" KeyPath="yes" />
+    <Component Id="RstExecutable" Directory="INSTALLFOLDER" Guid="{B2E4A6C3-8D52-4F9B-8C71-2A3F4E5D6C01}">
+      <File Id="RstExe" Source="$(var.RstExe)" />
+      <RegistryValue Root="HKCU" Key="Software\RST" Name="Executable" Type="integer" Value="1" KeyPath="yes" />
+      <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+      <RemoveFolder Id="RemoveUserProgramsFolder" Directory="UserProgramsFolder" On="uninstall" />
+    </Component>
+
+    <Component Id="RstLauncher" Directory="INSTALLFOLDER" Guid="{B2E4A6C3-8D52-4F9B-8C71-2A3F4E5D6C02}">
+      <File Id="RstLauncherCmd" Source="$(var.LauncherCmd)" />
+      <RegistryValue Root="HKCU" Key="Software\RST" Name="Launcher" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Component Id="AddToPath" Directory="INSTALLFOLDER" Guid="{B2E4A6C3-8D52-4F9B-8C71-2A3F4E5D6C03}">
       <Environment
         Id="RstPath"
         Name="PATH"
         Value="[INSTALLFOLDER]"
         Part="last"
         Action="set"
-        System="yes" />
+        System="no" />
+      <RegistryValue Root="HKCU" Key="Software\RST" Name="Path" Type="integer" Value="1" KeyPath="yes" />
     </Component>
-  </Fragment>
 
-  <Fragment>
-    <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="ApplicationProgramsFolder" Name="RST" />
-    </StandardDirectory>
-    <StandardDirectory Id="DesktopFolder" />
-  </Fragment>
-
-  <Fragment>
-    <Component Id="StartMenuShortcut" Directory="ApplicationProgramsFolder" Guid="*">
+    <Component Id="StartMenuShortcut" Directory="ApplicationProgramsFolder" Guid="{B2E4A6C3-8D52-4F9B-8C71-2A3F4E5D6C04}">
       <Shortcut
         Id="StartMenuShortcut"
         Name="RST"
-        Target="[#RstExe]"
-        WorkingDirectory="INSTALLFOLDER" />
+        Target="[#RstLauncherCmd]"
+        Icon="RstIcon.ico"
+        Show="minimized"
+        WorkingDirectory="PersonalFolder" />
       <RemoveFolder Id="RemoveStartMenuFolder" On="uninstall" />
-      <RegistryValue
-        Root="HKLM"
-        Key="Software\RST"
-        Name="StartMenuShortcut"
-        Type="integer"
-        Value="1"
-        KeyPath="yes" />
+      <RegistryValue Root="HKCU" Key="Software\RST" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
     </Component>
 
-    <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="*">
+    <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="{B2E4A6C3-8D52-4F9B-8C71-2A3F4E5D6C05}">
       <Shortcut
         Id="DesktopShortcut"
         Name="RST"
-        Target="[#RstExe]"
-        WorkingDirectory="INSTALLFOLDER" />
-      <RegistryValue
-        Root="HKLM"
-        Key="Software\RST"
-        Name="DesktopShortcut"
-        Type="integer"
-        Value="1"
-        KeyPath="yes" />
+        Target="[#RstLauncherCmd]"
+        Icon="RstIcon.ico"
+        Show="minimized"
+        WorkingDirectory="PersonalFolder" />
+      <RegistryValue Root="HKCU" Key="Software\RST" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
     </Component>
   </Fragment>
 </Wix>

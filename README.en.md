@@ -71,6 +71,51 @@ The language selected in **Options** is saved in the user's settings and takes p
 
 To create subtitles with Whisper, install [OpenAI Whisper](https://github.com/openai/whisper) and make sure the `whisper` and `ffmpeg` commands are available on your `PATH` (for example, `pip install -U openai-whisper` and `sudo apt install ffmpeg`; on Windows, `winget install Gyan.FFmpeg`). Reopen the terminal after installation so it picks up the updated `PATH`. This feature is unavailable if the `whisper` command cannot run; Whisper uses FFmpeg to read audio.
 
+## Usage
+
+Run without arguments to open the menu:
+
+```bash
+rst
+```
+
+Use the arrow keys to navigate and Enter to select. All interface screens except the main menu open in a window over it. In the file browser, type to filter files and folders; Enter opens a folder or selects a file; Backspace clears the filter or returns to the previous folder; F2 lets you enter a path manually; Esc cancels. During extraction and translation, the interface displays percentage progress. Choose **Extract subtitle** to select a video, choose a track, and set the output `.srt` filename.
+
+Choose **Extract and translate** to extract a video track and then translate it. The source language is read from the selected track's metadata, so the program only asks for the target language. The extracted SRT is kept alongside a second, translated file; you can cancel translation after extraction and keep the first file. If the metadata does not specify a language, automatic detection is used.
+
+Choose **Create subtitles with Whisper** to select a video, choose the spoken language using autocomplete, and set the output `.srt` filename. By default, the suggested name keeps the video's base name; you can change the filename or provide a different path. The program displays the progress reported by Whisper.
+
+Choose **Create subtitles with Whisper and translate** to generate an SRT in the spoken language and then translate it. The language selected in Whisper is used as the translation source; the original SRT is preserved even if translation is cancelled or fails.
+
+Without arguments, the program opens the interactive menu. To run an action without opening the interface, use `--action` and provide its required parameters. For CLI extraction, specify the subtitle track's language code, such as `pt` or `en`; a regional variant such as `pt-BR` also matches `pt`.
+
+```bash
+rst --action extract --input "video.mkv" --subtitle-language pt --output "video.srt"
+rst --action translate --input "video.srt" --source-language en --target-language pt --output "video-pt.srt"
+rst --action extract-and-translate --input "video.mkv" --subtitle-language en --target-language pt --output "video.srt" --translated-output "video-pt.srt"
+rst --action transcribe --input "video.mkv" --language en --output "video.srt"
+rst --action transcribe-and-translate --input "video.mkv" --language en --target-language pt --output "video.srt" --translated-output "video-pt.srt"
+```
+
+Supported actions are `extract`, `translate`, `extract-and-translate`, `transcribe`, and `transcribe-and-translate`. In combined actions, `--output` is the original SRT and `--translated-output` is the translated SRT. Translation of an extracted track uses its metadata language; if missing, automatic detection is used. `--source-language auto` also enables automatic detection for the `translate` action. See the options with `rst --help`.
+
+## Extraction
+
+Common text subtitle tracks in MKV/WebM (`S_TEXT/UTF8`, ASS/SSA, and WebVTT) and `mov_text` tracks in MP4/MOV are supported.
+
+If no output filename is provided, the program uses the video filename with the `.srt` extension.
+
+## Translation
+
+Choose **Translate subtitle** from the menu. The program asks, in order:
+
+1. The `.srt` file, using the file browser or by entering its path with `T`.
+2. The source language from a searchable list, with **Automatic** selected by default.
+3. The target language from a searchable list of the 249 languages in Google's catalog (names are shown in the language selected in the program; search by name or code; default: the language configured in the program).
+4. The translated output filename (default: `original_name-language.srt`, for example `AloneS13E13-pt.srt`).
+
+Timestamps and positioning tags (such as `{\an8}`) are preserved. Subtitles are sent in batches of up to 100 texts or 4,000 characters, with up to 4 concurrent requests and retries on failure.
+
 ## Tests
 
 Run the automated test suite:
@@ -102,51 +147,6 @@ The language is stored in the `language` file. The API key entered in **Options*
 ```bash
 cargo build --release
 ```
-
-## Usage
-
-Run without arguments to open the menu:
-
-```bash
-rst
-```
-
-Use the arrow keys to navigate and Enter to select. All interface screens except the main menu open in a window over it. In the file browser, type to filter files and folders; Enter opens a folder or selects a file; Backspace clears the filter or returns to the previous folder; F2 lets you enter a path manually; Esc cancels. During extraction and translation, the interface displays percentage progress. Choose **Extract subtitle** to select a video, choose a track, and set the output `.srt` filename.
-
-Choose **Extract and translate** to extract a video track and then translate it. The source language is read from the selected track's metadata, so the program only asks for the target language. The extracted SRT is kept alongside a second, translated file; you can cancel translation after extraction and keep the first file. If the metadata does not specify a language, automatic detection is used.
-
-Choose **Create subtitles with Whisper** to select a video, choose the spoken language using autocomplete, and set the output `.srt` filename. By default, the suggested name keeps the video's base name; you can change the filename or provide a different path. The program displays the progress reported by Whisper.
-
-Choose **Create subtitles with Whisper and translate** to generate an SRT in the spoken language and then translate it. The language selected in Whisper is used as the translation source; the original SRT is preserved even if translation is cancelled or fails.
-
-Without arguments, the program opens the interactive menu. To run an action without opening the interface, use `--action` and provide its required parameters. For CLI extraction, specify the subtitle track's language code, such as `pt` or `en`; a regional variant such as `pt-BR` also matches `pt`.
-
-```bash
-cargo run -- --action extract --input "video.mkv" --subtitle-language pt --output "video.srt"
-cargo run -- --action translate --input "video.srt" --source-language en --target-language pt --output "video-pt.srt"
-cargo run -- --action extract-and-translate --input "video.mkv" --subtitle-language en --target-language pt --output "video.srt" --translated-output "video-pt.srt"
-cargo run -- --action transcribe --input "video.mkv" --language en --output "video.srt"
-cargo run -- --action transcribe-and-translate --input "video.mkv" --language en --target-language pt --output "video.srt" --translated-output "video-pt.srt"
-```
-
-Supported actions are `extract`, `translate`, `extract-and-translate`, `transcribe`, and `transcribe-and-translate`. In combined actions, `--output` is the original SRT and `--translated-output` is the translated SRT. Translation of an extracted track uses its metadata language; if missing, automatic detection is used. `--source-language auto` also enables automatic detection for the `translate` action. See the options with `cargo run -- --help`.
-
-## Extraction
-
-Common text subtitle tracks in MKV/WebM (`S_TEXT/UTF8`, ASS/SSA, and WebVTT) and `mov_text` tracks in MP4/MOV are supported.
-
-If no output filename is provided, the program uses the video filename with the `.srt` extension.
-
-## Translation
-
-Choose **Translate subtitle** from the menu. The program asks, in order:
-
-1. The `.srt` file, using the file browser or by entering its path with `T`.
-2. The source language from a searchable list, with **Automatic** selected by default.
-3. The target language from a searchable list of the 249 languages in Google's catalog (names are shown in the language selected in the program; search by name or code; default: the language configured in the program).
-4. The translated output filename (default: `original_name-language.srt`, for example `AloneS13E13-pt.srt`).
-
-Timestamps and positioning tags (such as `{\an8}`) are preserved. Subtitles are sent in batches of up to 100 texts or 4,000 characters, with up to 4 concurrent requests and retries on failure.
 
 ### API key (optional)
 

@@ -71,6 +71,51 @@ O idioma escolhido em **Opções** é salvo nas configurações do usuário e te
 
 Para criar legendas com Whisper, instale o [OpenAI Whisper](https://github.com/openai/whisper) e deixe os comandos `whisper` e `ffmpeg` disponíveis no `PATH` (por exemplo, `pip install -U openai-whisper` e `sudo apt install ffmpeg`; no Windows, `winget install Gyan.FFmpeg`). Reabra o terminal depois de instalar para atualizar o `PATH`. Essa opção fica indisponível se o comando Whisper não puder ser executado; o FFmpeg é usado pelo Whisper para ler o áudio.
 
+## Uso
+
+Inicie sem argumentos para abrir o menu:
+
+```bash
+rst
+```
+
+Use as setas para navegar e Enter para selecionar. Todas as telas da interface, exceto o menu principal, abrem em uma janela sobre ele. No explorador, digite para filtrar arquivos e pastas; Enter abre uma pasta ou seleciona um arquivo; Backspace apaga o filtro ou volta à pasta anterior; F2 permite digitar o caminho manualmente; Esc cancela. Durante a extração e a tradução, a interface mostra o progresso percentual. Escolha **Extrair legenda** para selecionar o vídeo, escolher uma faixa e definir o nome do arquivo `.srt` de saída.
+
+Escolha **Extrair e traduzir** para extrair uma faixa do vídeo e traduzi-la em seguida. O idioma original é obtido dos metadados da faixa selecionada, então o programa pergunta apenas o idioma de destino. O SRT extraído é mantido junto com um segundo arquivo traduzido; é possível cancelar a tradução após a extração e manter o primeiro arquivo. Se os metadados não informarem o idioma, a detecção automática é usada.
+
+Escolha **Criar legendas com Whisper** para selecionar o vídeo, escolher o idioma falado no autocomplete e definir o nome do `.srt` de saída. O nome sugerido por padrão mantém o nome-base do vídeo; o arquivo pode ser alterado ou receber outro caminho. O programa mostra o percentual informado pelo Whisper.
+
+Escolha **Criar legendas com Whisper e traduzir** para gerar o SRT no idioma falado e traduzi-lo em seguida. O idioma selecionado no Whisper é usado como origem da tradução; o SRT original é preservado mesmo que a tradução seja cancelada ou falhe.
+
+Sem argumentos, o programa abre o menu interativo. Para executar uma ação sem abrir a interface, use `--action` e informe os parâmetros exigidos por ela. Para extração pelo CLI, indique o código do idioma da faixa, como `pt` ou `en`; uma variante regional como `pt-BR` também corresponde a `pt`.
+
+```bash
+rst --action extract --input "video.mkv" --subtitle-language pt --output "video.srt"
+rst --action translate --input "video.srt" --source-language en --target-language pt --output "video-pt.srt"
+rst --action extract-and-translate --input "video.mkv" --subtitle-language en --target-language pt --output "video.srt" --translated-output "video-pt.srt"
+rst --action transcribe --input "video.mkv" --language en --output "video.srt"
+rst --action transcribe-and-translate --input "video.mkv" --language en --target-language pt --output "video.srt" --translated-output "video-pt.srt"
+```
+
+As ações aceitas são `extract`, `translate`, `extract-and-translate`, `transcribe` e `transcribe-and-translate`. Em ações combinadas, `--output` é o SRT original e `--translated-output` é o SRT traduzido. A tradução de uma faixa extraída usa o idioma dos metadados; quando ausente, usa detecção automática. `--source-language auto` também habilita detecção automática na ação `translate`. Consulte as opções com `rst --help`.
+
+## Extração
+
+São aceitas faixas textuais comuns em MKV/WebM (`S_TEXT/UTF8`, ASS/SSA e WebVTT) e faixas `mov_text` em MP4/MOV.
+
+Se o nome de saída não for informado, o programa usa o nome do arquivo de vídeo com a extensão `.srt`.
+
+## Tradução
+
+Escolha **Traduzir legenda** no menu. O programa pergunta, em ordem:
+
+1. o arquivo `.srt`, pelo explorador de arquivos ou digitando o caminho com `T`;
+2. o idioma original em uma lista pesquisável, com **Automático** selecionado por padrão;
+3. o idioma de destino, em uma lista pesquisável com os 249 idiomas do catálogo Google (nomes no idioma selecionado no programa; filtre por nome ou código; padrão: o idioma configurado no programa);
+4. o nome do arquivo traduzido (padrão: `nome_original-idioma.srt`, por exemplo `AloneS13E13-pt.srt`).
+
+Os tempos e as tags de posição (como `{\an8}`) são preservados. As legendas são enviadas em lotes de até 100 textos ou 4000 caracteres, com até 4 requisições simultâneas e novas tentativas em caso de falha.
+
 ## Testes
 
 Execute a suíte automatizada com:
@@ -102,51 +147,6 @@ O idioma fica no arquivo `language`; a chave digitada em **Opções** fica em `g
 ```bash
 cargo build --release
 ```
-
-## Uso
-
-Inicie sem argumentos para abrir o menu:
-
-```bash
-rst
-```
-
-Use as setas para navegar e Enter para selecionar. Todas as telas da interface, exceto o menu principal, abrem em uma janela sobre ele. No explorador, digite para filtrar arquivos e pastas; Enter abre uma pasta ou seleciona um arquivo; Backspace apaga o filtro ou volta à pasta anterior; F2 permite digitar o caminho manualmente; Esc cancela. Durante a extração e a tradução, a interface mostra o progresso percentual. Escolha **Extrair legenda** para selecionar o vídeo, escolher uma faixa e definir o nome do arquivo `.srt` de saída.
-
-Escolha **Extrair e traduzir** para extrair uma faixa do vídeo e traduzi-la em seguida. O idioma original é obtido dos metadados da faixa selecionada, então o programa pergunta apenas o idioma de destino. O SRT extraído é mantido junto com um segundo arquivo traduzido; é possível cancelar a tradução após a extração e manter o primeiro arquivo. Se os metadados não informarem o idioma, a detecção automática é usada.
-
-Escolha **Criar legendas com Whisper** para selecionar o vídeo, escolher o idioma falado no autocomplete e definir o nome do `.srt` de saída. O nome sugerido por padrão mantém o nome-base do vídeo; o arquivo pode ser alterado ou receber outro caminho. O programa mostra o percentual informado pelo Whisper.
-
-Escolha **Criar legendas com Whisper e traduzir** para gerar o SRT no idioma falado e traduzi-lo em seguida. O idioma selecionado no Whisper é usado como origem da tradução; o SRT original é preservado mesmo que a tradução seja cancelada ou falhe.
-
-Sem argumentos, o programa abre o menu interativo. Para executar uma ação sem abrir a interface, use `--action` e informe os parâmetros exigidos por ela. Para extração pelo CLI, indique o código do idioma da faixa, como `pt` ou `en`; uma variante regional como `pt-BR` também corresponde a `pt`.
-
-```bash
-cargo run -- --action extract --input "video.mkv" --subtitle-language pt --output "video.srt"
-cargo run -- --action translate --input "video.srt" --source-language en --target-language pt --output "video-pt.srt"
-cargo run -- --action extract-and-translate --input "video.mkv" --subtitle-language en --target-language pt --output "video.srt" --translated-output "video-pt.srt"
-cargo run -- --action transcribe --input "video.mkv" --language en --output "video.srt"
-cargo run -- --action transcribe-and-translate --input "video.mkv" --language en --target-language pt --output "video.srt" --translated-output "video-pt.srt"
-```
-
-As ações aceitas são `extract`, `translate`, `extract-and-translate`, `transcribe` e `transcribe-and-translate`. Em ações combinadas, `--output` é o SRT original e `--translated-output` é o SRT traduzido. A tradução de uma faixa extraída usa o idioma dos metadados; quando ausente, usa detecção automática. `--source-language auto` também habilita detecção automática na ação `translate`. Consulte as opções com `cargo run -- --help`.
-
-## Extração
-
-São aceitas faixas textuais comuns em MKV/WebM (`S_TEXT/UTF8`, ASS/SSA e WebVTT) e faixas `mov_text` em MP4/MOV.
-
-Se o nome de saída não for informado, o programa usa o nome do arquivo de vídeo com a extensão `.srt`.
-
-## Tradução
-
-Escolha **Traduzir legenda** no menu. O programa pergunta, em ordem:
-
-1. o arquivo `.srt`, pelo explorador de arquivos ou digitando o caminho com `T`;
-2. o idioma original em uma lista pesquisável, com **Automático** selecionado por padrão;
-3. o idioma de destino, em uma lista pesquisável com os 249 idiomas do catálogo Google (nomes no idioma selecionado no programa; filtre por nome ou código; padrão: o idioma configurado no programa);
-4. o nome do arquivo traduzido (padrão: `nome_original-idioma.srt`, por exemplo `AloneS13E13-pt.srt`).
-
-Os tempos e as tags de posição (como `{\an8}`) são preservados. As legendas são enviadas em lotes de até 100 textos ou 4000 caracteres, com até 4 requisições simultâneas e novas tentativas em caso de falha.
 
 ### Chave de API (opcional)
 

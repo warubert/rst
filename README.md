@@ -6,9 +6,23 @@
   Ferramenta de terminal escrita em Rust para extrair e traduzir legendas de vídeos de forma simples e direta.
 </p>
 
+[Português](README.md) · [English](README.en.md) · [Español](README.es.md)
+
 O RST detecta e extrai faixas de legenda de arquivos MKV/WebM e MP4/MOV com parsers Rust integrados.
 
-**Downloads diretos**:
+## História
+
+Criei o RST inicialmente para uso próprio. Minha esposa e eu gostamos de assistir a séries meio undergrounds sobre sobrevivência. Como ela não fala inglês e raramente encontrávamos legendas em português, eu precisava extrair as legendas em inglês dos episódios e traduzi-las.
+
+Antes do RST, eu usava o `ffprobe` para descobrir o índice da faixa de legenda, o `ffmpeg` para extraí-la e, depois, dividia o arquivo em trechos para traduzi-los um a um no Google Tradutor, que limita o tamanho dos textos. O processo levava de cinco a dez minutos.
+
+Com o RST, esse fluxo ficou bem mais simples: a interface interativa guia a extração e a tradução em poucos passos, sem que seja preciso conhecer os comandos do terminal.
+
+Também adicionei a criação de legendas com o Whisper. A ideia surgiu quando quisemos assistir a um episódio especial da mesma série, que não tinha legendas. Para usar essa função, é necessário instalar o Whisper e o FFmpeg; veja os [requisitos](#requisitos).
+
+Espero que o RST seja útil para outras pessoas também! 😄
+
+## Downloads diretos
 
 | Plataforma    | Arquitetura           | ZIP portátil                                                                                        | Instalador                                                                                          | Pacote Debian                                                                           | Assinatura GPG                                                                                  | Pacote compactado                                                                             |
 | ------------- | --------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
@@ -19,6 +33,25 @@ O RST detecta e extrai faixas de legenda de arquivos MKV/WebM e MP4/MOV com pars
 | Debian/Ubuntu | amd64                 | —                                                                                                   | —                                                                                                   | [rst_amd64.deb](https://github.com/warubert/rst/releases/latest/download/rst_amd64.deb) | [rst_amd64.deb.asc](https://github.com/warubert/rst/releases/latest/download/rst_amd64.deb.asc) | [rst_amd64.tar.gz](https://github.com/warubert/rst/releases/latest/download/rst_amd64.tar.gz) |
 | Debian/Ubuntu | arm64                 | —                                                                                                   | —                                                                                                   | [rst_arm64.deb](https://github.com/warubert/rst/releases/latest/download/rst_arm64.deb) | [rst_arm64.deb.asc](https://github.com/warubert/rst/releases/latest/download/rst_arm64.deb.asc) | [rst_arm64.tar.gz](https://github.com/warubert/rst/releases/latest/download/rst_arm64.tar.gz) |
 | Debian/Ubuntu | i386 (32 bits)        | —                                                                                                   | —                                                                                                   | [rst_i386.deb](https://github.com/warubert/rst/releases/latest/download/rst_i386.deb)   | [rst_i386.deb.asc](https://github.com/warubert/rst/releases/latest/download/rst_i386.deb.asc)   | [rst_i386.tar.gz](https://github.com/warubert/rst/releases/latest/download/rst_i386.tar.gz)   |
+
+### Instalação pelo repositório APT
+
+```bash
+curl -fsSLo /tmp/rst-public.key https://warubert.github.io/rst/public.key
+gpg --show-keys --with-fingerprint /tmp/rst-public.key
+gpg --dearmor < /tmp/rst-public.key | sudo tee /usr/share/keyrings/rst-archive-keyring.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/rst-archive-keyring.gpg] https://warubert.github.io/rst stable main" | sudo tee /etc/apt/sources.list.d/rst.list
+sudo apt-get update
+sudo apt-get install rst
+```
+
+Para instalar especificamente o pacote de 32 bits (`i386`) em um sistema amd64 com suporte multiarch:
+
+```bash
+sudo dpkg --add-architecture i386
+sudo apt-get update
+sudo apt-get install rst:i386
+```
 
 Para baixar versões anteriores, consulte [todas as releases](https://github.com/warubert/rst/releases).
 
@@ -36,8 +69,6 @@ O idioma escolhido em **Opções** é salvo nas configurações do usuário e te
 
 ## Requisitos
 
-Também é necessário ter o Rust e o Cargo instalados para compilar o projeto.
-
 Para criar legendas com Whisper, instale o [OpenAI Whisper](https://github.com/openai/whisper) e deixe os comandos `whisper` e `ffmpeg` disponíveis no `PATH` (por exemplo, `pip install -U openai-whisper` e `sudo apt install ffmpeg`; no Windows, `winget install Gyan.FFmpeg`). Reabra o terminal depois de instalar para atualizar o `PATH`. Essa opção fica indisponível se o comando Whisper não puder ser executado; o FFmpeg é usado pelo Whisper para ler o áudio.
 
 ## Testes
@@ -47,8 +78,6 @@ Execute a suíte automatizada com:
 ```bash
 cargo test
 ```
-
-Os testes cobrem o parsing e a extração de faixas de legenda, a conversão para SRT, a transcrição, o progresso do Whisper, o fluxo de entrada com e sem argumento, as ações do menu, a geração do nome `.srt`, a seleção e persistência do idioma, a renderização das telas Ratatui e o fluxo combinado de extração e tradução com dependências simuladas.
 
 Para verificar formatação, compilação e lint:
 
@@ -74,40 +103,12 @@ O idioma fica no arquivo `language`; a chave digitada em **Opções** fica em `g
 cargo build --release
 ```
 
-O workflow do GitHub Actions executa formatação, Clippy e testes em amd64 e arm64, compila os testes i386 sem executá-los no runner de 64 bits e valida builds Windows x64/x86 e macOS Intel/Apple Silicon. Ao enviar uma tag `vX.Y.Z` igual à versão do `Cargo.toml`, ele cria pacotes `.deb` para amd64, arm64 e i386, ZIPs e instaladores MSI para Windows x64/x86, e ZIPs e instaladores `.pkg` para macOS Intel/arm64. Os arquivos são publicados em uma GitHub Release e os índices do repositório APT assinado são atualizados no GitHub Pages. O pacote i386 é de 32 bits; em um Ubuntu amd64, é necessário habilitar a arquitetura i386 no APT para instalá-lo.
-
-adicionar o repositório:
-
-```bash
-curl -fsSLo /tmp/rst-public.key https://warubert.github.io/rst/public.key
-gpg --show-keys --with-fingerprint /tmp/rst-public.key
-gpg --dearmor < /tmp/rst-public.key | sudo tee /usr/share/keyrings/rst-archive-keyring.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/rst-archive-keyring.gpg] https://warubert.github.io/rst stable main" | sudo tee /etc/apt/sources.list.d/rst.list
-sudo apt-get update
-sudo apt-get install rst
-```
-
-Para instalar especificamente o pacote de 32 bits (`i386`) em um sistema amd64 com suporte multiarch:
-
-```bash
-sudo dpkg --add-architecture i386
-sudo apt-get update
-sudo apt-get install rst:i386
-```
-
-Para a versão `1.0.0`, crie e envie a tag:
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
 ## Uso
 
 Inicie sem argumentos para abrir o menu:
 
 ```bash
-cargo run
+rst
 ```
 
 Use as setas para navegar e Enter para selecionar. Todas as telas da interface, exceto o menu principal, abrem em uma janela sobre ele. No explorador, digite para filtrar arquivos e pastas; Enter abre uma pasta ou seleciona um arquivo; Backspace apaga o filtro ou volta à pasta anterior; F2 permite digitar o caminho manualmente; Esc cancela. Durante a extração e a tradução, a interface mostra o progresso percentual. Escolha **Extrair legenda** para selecionar o vídeo, escolher uma faixa e definir o nome do arquivo `.srt` de saída.
@@ -183,7 +184,3 @@ Os testes com o serviço real são ignorados por padrão. O primeiro usa a chave
 cargo test translates_the_sample_file_with_the_real_service -- --ignored
 cargo test translates_the_sample_file_without_an_api_key -- --ignored
 ```
-
-### Em desenvolvimento
-
-- melhorar readme e traduzir para en e es

@@ -1,3 +1,5 @@
+[Português](README.md) · [English](README.en.md) · [Español](README.es.md)
+
 <h1 align="center">
   <img src="assets/rst-logo.jpeg" alt="Logo RST com mascote peixe-esqueleto e identidade visual de terminal" width="700">
 </h1>
@@ -5,8 +7,6 @@
 <p align="center">
   Ferramenta de terminal escrita em Rust para extrair e traduzir legendas de vídeos de forma simples e direta.
 </p>
-
-[Português](README.md) · [English](README.en.md) · [Español](README.es.md)
 
 O RST detecta e extrai faixas de legenda de arquivos MKV/WebM e MP4/MOV com parsers Rust integrados.
 
